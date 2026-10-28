@@ -8,6 +8,12 @@
   <meta name="description" content="Mawe Tatu Dairy Farm — offline-first milk and calf feed logger" />
   <title>Mawe Tatu Dairy</title>
 
+  <!-- Web app manifest + icons: makes Chrome offer "Install app" / "Add to Home screen".
+       All three files sit next to index.html and are pre-cached by sw.js. -->
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
+  <link rel="apple-touch-icon" href="icon-192.png" />
+
   <!--
     Tailwind CSS (Play CDN). sw.js pre-caches this exact URL, so the UI is
     fully styled offline. If you change this URL, change TAILWIND_URL in sw.js too.

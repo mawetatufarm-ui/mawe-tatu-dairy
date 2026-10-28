@@ -6,14 +6,15 @@
  *
  * Strategy
  *   • INSTALL: download and cache every file the app needs (the "app shell"):
- *     index.html, app.js, the Tailwind CDN script and the Dexie CDN script.
+ *     index.html, app.js, manifest.json, the two icons, the Tailwind CDN
+ *     script and the Dexie CDN script.
  *     If any file fails to download, the install fails and the browser
  *     retries on the next visit, so a half-cached app is never activated.
  *   • FETCH:
  *       - page loads (navigations)  → cached index.html first (instant, works offline),
  *                                     network only if the cache is somehow empty
  *       - app-shell files           → cache first, network fallback
- *       - other same-origin GETs    → network first, cache fallback (future icons etc.)
+ *       - other same-origin GETs    → network first, cache fallback
  *       - Apps Script / any POST    → never touched; always go straight to the network
  *   • ACTIVATE: delete caches from older versions.
  *   • UPDATE: a new sw.js waits until app.js sends SKIP_WAITING (the user
@@ -25,7 +26,7 @@
 
 'use strict';
 
-const CACHE_VERSION = 'v2.0.0';
+const CACHE_VERSION = 'v2.1.0'; // v2.1.0: added manifest.json + icons
 const CACHE_PREFIX = 'mawe-tatu-';
 const SHELL_CACHE = `${CACHE_PREFIX}shell-${CACHE_VERSION}`;
 
@@ -39,6 +40,9 @@ const INDEX_URL = new URL('./index.html', SCOPE).href;
 const LOCAL_ASSETS = [
   INDEX_URL,
   new URL('./app.js', SCOPE).href,
+  new URL('./manifest.json', SCOPE).href,
+  new URL('./icon-192.png', SCOPE).href,
+  new URL('./icon-512.png', SCOPE).href,
 ];
 const CDN_ASSETS = [TAILWIND_URL, DEXIE_URL];
 
