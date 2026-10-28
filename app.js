@@ -50,7 +50,7 @@
   });
 
   const AUTH_CONFIG = Object.freeze({
-    GOOGLE_CLIENT_ID: 'http://810514188486-sviqs36dl9na7rlk8o1k430fvq7v6ohh.apps.googleusercontent.com',
+    GOOGLE_CLIENT_ID: '810514188486-sviqs36dl9na7rlk8o1k430fvq7v6ohh.apps.googleusercontent.com',
 
     // Google ID tokens live 1 hour. Treat a token as expired a little early
     // so it cannot run out between the check and the server receiving it.
