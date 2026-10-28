@@ -38,7 +38,7 @@
    * ------------------------------------------------------------------ */
 
   const SYNC_CONFIG = Object.freeze({
-    ENDPOINT_URL: 'PASTE_YOUR_APPS_SCRIPT_WEB_APP_URL_HERE',
+    ENDPOINT_URL: 'https://script.google.com/macros/s/AKfycbyD32v0BqQcdmsn11TYS9VhbzoGqbSbBjCb2PE_ybqe8UDLJBrXAr25c19hSkuioHCR/exec',
     API_KEY: '',
 
     BATCH_SIZE: 25,                 // records per POST (Apps Script handles this comfortably)
