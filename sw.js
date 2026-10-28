@@ -26,7 +26,7 @@
 
 'use strict';
 
-const CACHE_VERSION = 'v3.0.0'; // v3.0.0: Google Sign-In
+const CACHE_VERSION = 'v3.0.1'; // v3.0.0: Google Sign-In
 const CACHE_PREFIX = 'mawe-tatu-';
 const SHELL_CACHE = `${CACHE_PREFIX}shell-${CACHE_VERSION}`;
 
