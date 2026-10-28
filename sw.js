@@ -26,7 +26,7 @@
 
 'use strict';
 
-const CACHE_VERSION = 'v2.1.0'; // v2.1.0: added manifest.json + icons
+const CACHE_VERSION = 'v2.1.1'; // v2.1.0: added manifest.json + icons
 const CACHE_PREFIX = 'mawe-tatu-';
 const SHELL_CACHE = `${CACHE_PREFIX}shell-${CACHE_VERSION}`;
 
