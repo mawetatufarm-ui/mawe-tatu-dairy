@@ -26,7 +26,7 @@
 
 'use strict';
 
-const CACHE_VERSION = 'v2.1.1'; // v2.1.0: added manifest.json + icons
+const CACHE_VERSION = 'v3.0.0'; // v3.0.0: Google Sign-In
 const CACHE_PREFIX = 'mawe-tatu-';
 const SHELL_CACHE = `${CACHE_PREFIX}shell-${CACHE_VERSION}`;
 
@@ -48,8 +48,8 @@ const CDN_ASSETS = [TAILWIND_URL, DEXIE_URL];
 
 const PRECACHE_URLS = new Set([...LOCAL_ASSETS, ...CDN_ASSETS]);
 
-// Requests to these hosts are the sync API — never cache them.
-const BYPASS_HOSTS = ['script.google.com', 'script.googleusercontent.com'];
+// Sync API and Google Sign-In — never cache these; always go to the network.
+const BYPASS_HOSTS = ['script.google.com', 'script.googleusercontent.com', 'accounts.google.com'];
 
 /* ------------------------------------------------------------------
  * INSTALL — pre-cache the app shell

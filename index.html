@@ -42,7 +42,20 @@
        Pre-cached by sw.js (DEXIE_URL) — keep the two URLs identical. -->
   <script src="https://unpkg.com/dexie@4.0.8/dist/dexie.js"></script>
 
+  <!--
+    Google Identity Services (official "Sign in with Google" library).
+    Loaded async so it never blocks the app. It is NOT cached by sw.js:
+    it is only needed online (to sign in or refresh a sign-in). The
+    onload/onerror flags let app.js know whether it loaded; if it failed
+    (app opened offline), app.js re-loads it when the phone is back online.
+  -->
+  <script id="gis-script" src="https://accounts.google.com/gsi/client" async defer
+          onload="this.dataset.loaded='1'" onerror="this.dataset.failed='1'"></script>
+
   <style>
+    /* Same as Tailwind's .hidden, defined here too so the sign-in gate still
+       hides the forms even if the Tailwind script has not loaded yet. */
+    .hidden { display: none !important; }
     /* Respect iPhone safe areas (home bar / notch) */
     body { padding-bottom: env(safe-area-inset-bottom); }
     /* Make native date pickers and selects match the rest of the inputs */
@@ -85,7 +98,46 @@
     </div>
   </header>
 
-  <main class="max-w-md mx-auto px-4 pt-4 pb-10">
+  <!-- ===================== SIGN-IN SCREEN ===================== -->
+  <!-- Hidden by default; app.js shows it when nobody is signed in (mode
+       'signin') or when uploads need a fresh Google sign-in (mode 'reauth'). -->
+  <section id="auth-screen" class="hidden max-w-md mx-auto px-4 pt-8 pb-10" aria-labelledby="auth-title">
+    <div class="bg-white rounded-2xl shadow-sm p-6 text-center">
+      <img src="icon-192.png" alt="" width="80" height="80" class="w-20 h-20 mx-auto rounded-2xl shadow" />
+      <h2 id="auth-title" class="mt-4 text-xl font-bold text-farm-800">Sign in to Mawe Tatu Dairy</h2>
+      <p id="auth-message" class="mt-2 text-sm text-slate-600">
+        Use your Google account. You need internet for this first sign-in; after that the app works offline.
+      </p>
+
+      <!-- Google renders the official "Sign in with Google" button in here -->
+      <div id="g-signin-btn" class="mt-6 flex justify-center min-h-[44px]"></div>
+
+      <p id="auth-status" class="hidden mt-3 text-sm text-slate-500" role="status" aria-live="polite"></p>
+      <p id="auth-error" class="hidden mt-4 text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2" role="alert"></p>
+
+      <!-- Only shown in 'reauth' mode: go back to the forms without signing in -->
+      <button id="auth-cancel" type="button"
+              class="hidden mt-6 text-sm font-semibold text-slate-500 underline underline-offset-2">
+        Not now: keep working (records wait on this phone)
+      </button>
+    </div>
+  </section>
+
+  <!-- ===================== THE APP (signed-in users only) ===================== -->
+  <!-- Hidden by default; app.js reveals it once a session exists. -->
+  <main id="app-main" class="hidden max-w-md mx-auto px-4 pt-4 pb-10">
+
+    <!-- Signed-in user + Log out -->
+    <div id="user-bar" class="flex items-center justify-between gap-3 mb-3 px-1">
+      <div class="min-w-0">
+        <p class="text-sm text-slate-600 truncate">Signed in as <span id="user-name" class="font-semibold text-slate-800"></span></p>
+        <p id="user-email" class="text-xs text-slate-400 truncate"></p>
+      </div>
+      <button id="logout-btn" type="button"
+              class="shrink-0 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-semibold text-slate-600 hover:bg-slate-50 active:scale-95">
+        Log out
+      </button>
+    </div>
 
     <!-- ===================== TAB TOGGLE ===================== -->
     <!-- Segmented control. app.js swaps the active classes and shows/hides panels. -->
