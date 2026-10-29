@@ -5,7 +5,7 @@
   <!-- viewport-fit=cover lets the app use the full screen on notched phones -->
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="theme-color" content="#166534" />
-  <meta name="description" content="Mawe Tatu Dairy Farm — offline-first milk and calf feed logger" />
+  <meta name="description" content="Mawe Tatu Dairy Farm — offline-first herd register, milk and calf feed logger" />
   <title>Mawe Tatu Dairy</title>
 
   <!-- Web app manifest + icons: makes Chrome offer "Install app" / "Add to Home screen".
@@ -51,6 +51,13 @@
   -->
   <script id="gis-script" src="https://accounts.google.com/gsi/client" async defer
           onload="this.dataset.loaded='1'" onerror="this.dataset.failed='1'"></script>
+
+  <!-- Shared classes for the Herd form fields (Tailwind Play CDN understands @apply) -->
+  <style type="text/tailwindcss">
+    .hf-label { @apply block text-sm font-medium mb-1; }
+    .hf-input { @apply w-full rounded-xl border border-slate-300 px-3 py-2.5 text-base bg-white focus:outline-none focus:ring-2 focus:ring-sky-500; }
+    .hf-section { @apply text-xs font-semibold uppercase tracking-wide text-slate-400 pt-2; }
+  </style>
 
   <style>
     /* Same as Tailwind's .hidden, defined here too so the sign-in gate still
@@ -141,16 +148,21 @@
 
     <!-- ===================== TAB TOGGLE ===================== -->
     <!-- Segmented control. app.js swaps the active classes and shows/hides panels. -->
-    <nav class="grid grid-cols-2 gap-1 bg-white p-1 rounded-2xl shadow-sm mb-4" role="tablist" aria-label="Choose a logger">
+    <nav class="grid grid-cols-3 gap-1 bg-white p-1 rounded-2xl shadow-sm mb-4" role="tablist" aria-label="Choose a section">
       <button id="tab-milk" type="button" role="tab" aria-selected="true" aria-controls="panel-milk"
               data-tab="milk"
               class="tab-btn flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-semibold transition">
-        <span aria-hidden="true">🥛</span> Milk Logger
+        <span aria-hidden="true">🥛</span> Milk
       </button>
       <button id="tab-calf" type="button" role="tab" aria-selected="false" aria-controls="panel-calf"
               data-tab="calf"
               class="tab-btn flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-semibold transition">
         <span aria-hidden="true">🐮</span> Calf Feed
+      </button>
+      <button id="tab-herd" type="button" role="tab" aria-selected="false" aria-controls="panel-herd"
+              data-tab="herd"
+              class="tab-btn flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-semibold transition">
+        <span aria-hidden="true">📋</span> Herd
       </button>
     </nav>
 
@@ -160,12 +172,13 @@
         <h2 class="text-base font-bold text-farm-800">Record milk yield</h2>
 
         <div>
-          <label for="milk-cowId" class="block text-sm font-medium mb-1">Cow ID</label>
-          <input id="milk-cowId" name="cowId" type="text" required maxlength="20"
-                 placeholder="e.g. MT-001" list="cow-suggestions"
-                 class="w-full rounded-xl border border-slate-300 px-4 py-3 text-base uppercase focus:outline-none focus:ring-2 focus:ring-farm-500" />
-          <!-- Filled by app.js from previously used Cow IDs, so repeat entry is one tap -->
-          <datalist id="cow-suggestions"></datalist>
+          <label for="milk-cowId" class="block text-sm font-medium mb-1">Cow</label>
+          <!-- Filled by herd.js from the herd register: cows marked Lactating first.
+               The option value is the permanent ID (e.g. MT-001). -->
+          <select id="milk-cowId" name="cowId" required
+                  class="w-full rounded-xl border border-slate-300 px-4 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-farm-500">
+            <option value="">Loading herd…</option>
+          </select>
         </div>
 
         <div class="grid grid-cols-2 gap-3">
@@ -216,11 +229,12 @@
         <h2 class="text-base font-bold text-calf-700">Record calf feeding</h2>
 
         <div>
-          <label for="calf-calfId" class="block text-sm font-medium mb-1">Calf ID</label>
-          <input id="calf-calfId" name="calfId" type="text" required maxlength="20"
-                 placeholder="e.g. CF-012" list="calf-suggestions"
-                 class="w-full rounded-xl border border-slate-300 px-4 py-3 text-base uppercase focus:outline-none focus:ring-2 focus:ring-calf-500" />
-          <datalist id="calf-suggestions"></datalist>
+          <label for="calf-calfId" class="block text-sm font-medium mb-1">Calf</label>
+          <!-- Filled by herd.js: active calves, heifers and young bulls -->
+          <select id="calf-calfId" name="calfId" required
+                  class="w-full rounded-xl border border-slate-300 px-4 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-calf-500">
+            <option value="">Loading herd…</option>
+          </select>
         </div>
 
         <div class="grid grid-cols-2 gap-3">
@@ -260,6 +274,184 @@
         <ul id="calf-recent" class="space-y-2"></ul>
       </div>
     </section>
+
+    <!-- ===================== PANEL 3: HERD REGISTER ===================== -->
+    <!-- Driven by herd.js. Two views: the list (#herd-list-view) and the
+         add / edit form (#herd-form); only one is visible at a time. -->
+    <section id="panel-herd" role="tabpanel" aria-labelledby="tab-herd" class="hidden panel-enter">
+
+      <!-- ---------- List view ---------- -->
+      <div id="herd-list-view">
+        <div class="flex items-center justify-between gap-2 mb-3">
+          <!-- Filters: herd.js toggles the highlight and fills the counts -->
+          <div class="flex gap-1 bg-white p-1 rounded-xl shadow-sm text-xs font-semibold" role="group" aria-label="Filter animals">
+            <button type="button" class="herd-filter px-3 py-2 rounded-lg" data-filter="active">On farm <span class="herd-count opacity-70">0</span></button>
+            <button type="button" class="herd-filter px-3 py-2 rounded-lg" data-filter="inactive">Gone <span class="herd-count opacity-70">0</span></button>
+            <button type="button" class="herd-filter px-3 py-2 rounded-lg" data-filter="outside">Outside <span class="herd-count opacity-70">0</span></button>
+          </div>
+          <button id="herd-add" type="button"
+                  class="shrink-0 rounded-xl bg-sky-700 hover:bg-sky-800 active:scale-95 text-white text-sm font-bold px-3 py-2 shadow">
+            + Add
+          </button>
+        </div>
+        <p id="herd-summary" class="text-xs text-slate-500 mb-2 px-1"></p>
+        <ul id="herd-list" class="space-y-2"></ul>
+      </div>
+
+      <!-- ---------- Add / edit form ---------- -->
+      <form id="herd-form" class="hidden bg-white rounded-2xl shadow-sm p-5 space-y-4" novalidate autocomplete="off">
+        <div class="flex items-center justify-between gap-2">
+          <button id="herd-back" type="button" class="text-sm font-semibold text-sky-700" aria-label="Back to the herd list">‹ Herd</button>
+          <span id="herd-form-sync"></span>
+        </div>
+        <h2 id="herd-form-title" class="text-base font-bold text-sky-800">Add an animal</h2>
+        <div id="herd-form-meta" class="hidden text-xs text-slate-500 space-y-0.5"></div>
+
+        <!-- Identity -->
+        <div class="grid grid-cols-2 gap-3">
+          <div class="col-span-2">
+            <label for="hf-herd" class="hf-label">Kind of animal</label>
+            <select id="hf-herd" class="hf-input">
+              <option value="farm">Farm animal (MT- number)</option>
+              <option value="external">Outside animal: AI bull or ancestor (X- number)</option>
+            </select>
+          </div>
+          <div>
+            <label for="hf-animalId" class="hf-label">ID</label>
+            <input id="hf-animalId" type="text" maxlength="8" class="hf-input uppercase" />
+          </div>
+          <div>
+            <label for="hf-name" class="hf-label">Name</label>
+            <input id="hf-name" type="text" maxlength="40" class="hf-input" placeholder="e.g. Daisy" />
+          </div>
+          <p id="herd-id-hint" class="col-span-2 -mt-2 text-xs text-slate-400"></p>
+          <div>
+            <label for="hf-category" class="hf-label">Category</label>
+            <select id="hf-category" class="hf-input"></select>
+          </div>
+          <div>
+            <label for="hf-sex" class="hf-label">Sex</label>
+            <select id="hf-sex" class="hf-input"></select>
+          </div>
+          <div>
+            <label for="hf-breed" class="hf-label">Breed</label>
+            <select id="hf-breed" class="hf-input"></select>
+          </div>
+          <div>
+            <label for="hf-breedNote" class="hf-label">Breed note</label>
+            <input id="hf-breedNote" type="text" maxlength="120" class="hf-input" placeholder="e.g. Fleckvieh × Ayrshire" />
+          </div>
+          <div class="col-span-2">
+            <label for="hf-dateOfBirth" class="hf-label">Date of birth</label>
+            <div class="flex items-center gap-3">
+              <input id="hf-dateOfBirth" type="date" class="hf-input" />
+              <label class="flex items-center gap-1.5 text-sm text-slate-600 shrink-0">
+                <input id="hf-dobApprox" type="checkbox" class="w-4 h-4 accent-sky-700" /> Approx.
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <!-- Origin and parents -->
+        <p class="hf-section">Origin &amp; parents</p>
+        <div class="grid grid-cols-2 gap-3">
+          <div id="hfg-source">
+            <label for="hf-source" class="hf-label">Came from</label>
+            <select id="hf-source" class="hf-input"></select>
+          </div>
+          <div id="hfg-purchaseDate">
+            <label for="hf-purchaseDate" class="hf-label">Purchase date</label>
+            <input id="hf-purchaseDate" type="date" class="hf-input" />
+          </div>
+          <div class="col-span-2">
+            <label for="hf-damId" class="hf-label">Dam (mother)</label>
+            <select id="hf-damId" class="hf-input"></select>
+          </div>
+          <div class="col-span-2">
+            <label for="hf-sireId" class="hf-label">Sire (father / AI bull)</label>
+            <select id="hf-sireId" class="hf-input"></select>
+          </div>
+        </div>
+
+        <!-- Status (farm animals only) -->
+        <div id="hfg-status" class="space-y-3">
+          <p class="hf-section">Status</p>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label for="hf-status" class="hf-label">Status</label>
+              <select id="hf-status" class="hf-input"></select>
+            </div>
+            <div>
+              <label for="hf-statusDate" class="hf-label">Date</label>
+              <input id="hf-statusDate" type="date" class="hf-input" />
+            </div>
+            <div id="hfg-salePrice" class="col-span-2">
+              <label for="hf-salePrice" class="hf-label">Sale price (KES, optional)</label>
+              <input id="hf-salePrice" type="number" min="0" step="1" inputmode="numeric" class="hf-input" />
+            </div>
+            <div id="hfg-statusNote" class="col-span-2">
+              <label id="hf-statusNote-label" for="hf-statusNote" class="hf-label">Reason / note (optional)</label>
+              <input id="hf-statusNote" type="text" maxlength="120" class="hf-input" />
+            </div>
+          </div>
+        </div>
+
+        <!-- Milking and pregnancy (cows and heifers) -->
+        <div id="hfg-female" class="space-y-3">
+          <p class="hf-section">Milking &amp; pregnancy</p>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label for="hf-milkingStatus" class="hf-label">Milking</label>
+              <select id="hf-milkingStatus" class="hf-input"></select>
+            </div>
+            <div>
+              <label for="hf-pregnancyStatus" class="hf-label">Pregnancy</label>
+              <select id="hf-pregnancyStatus" class="hf-input"></select>
+            </div>
+            <div id="hfg-pregnancySire" class="col-span-2">
+              <label for="hf-pregnancySireId" class="hf-label">In calf to (AI bull)</label>
+              <select id="hf-pregnancySireId" class="hf-input"></select>
+            </div>
+          </div>
+        </div>
+
+        <!-- AI bull details (outside animals in the AI bull category) -->
+        <div id="hfg-ai" class="space-y-3">
+          <p class="hf-section">From the straw label</p>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label for="hf-aiCode" class="hf-label">Bull code / herdbook no.</label>
+              <input id="hf-aiCode" type="text" maxlength="40" class="hf-input" />
+            </div>
+            <div>
+              <label for="hf-semenType" class="hf-label">Semen type</label>
+              <select id="hf-semenType" class="hf-input"></select>
+            </div>
+            <div class="col-span-2">
+              <label for="hf-semenSupplier" class="hf-label">Supplier</label>
+              <input id="hf-semenSupplier" type="text" maxlength="60" class="hf-input" placeholder="e.g. KAGRC, ABS, WWS" />
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <label for="hf-notes" class="hf-label">Notes</label>
+          <textarea id="hf-notes" rows="2" maxlength="500" class="hf-input"></textarea>
+        </div>
+
+        <p id="herd-warning" class="hidden text-sm text-calf-700 bg-calf-50 rounded-lg px-3 py-2" role="status"></p>
+        <p id="herd-error" class="hidden text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2" role="alert"></p>
+
+        <button id="herd-save" type="submit"
+                class="w-full rounded-xl bg-sky-700 hover:bg-sky-800 active:scale-[.98] text-white font-bold py-3.5 text-base shadow transition">
+          Save Animal
+        </button>
+        <div class="flex items-center justify-between">
+          <button id="herd-cancel" type="button" class="text-sm font-semibold text-slate-500">Cancel</button>
+          <button id="herd-delete" type="button" class="hidden text-sm font-semibold text-red-600">Delete (not uploaded yet)</button>
+        </div>
+      </form>
+    </section>
   </main>
 
   <!-- ===================== APP UPDATE BANNER ===================== -->
@@ -283,7 +475,11 @@
        class="fixed left-1/2 -translate-x-1/2 bottom-6 z-30 hidden max-w-[90vw] rounded-xl px-4 py-3 text-sm font-semibold text-white shadow-lg"
        role="status" aria-live="polite"></div>
 
-  <!-- App logic. `defer` runs it after the HTML is parsed, and after dexie.js has loaded. -->
+  <!-- App logic. `defer` runs both after the HTML is parsed, in this order:
+       herd.js defines window.MaweHerd (herd register), then app.js boots the
+       app and connects it to the database and sync engine.
+       Both are pre-cached by sw.js — keep the file names identical. -->
+  <script src="herd.js" defer></script>
   <script src="app.js" defer></script>
 </body>
 </html>

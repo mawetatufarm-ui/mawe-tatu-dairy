@@ -2,9 +2,10 @@
  * Mawe Tatu Dairy — app.js
  * Local-first storage (Dexie) + Google Sign-In + sync engine + service worker
  * ---------------------------------------------------------------------
- * Loaded by index.html with <script src="app.js" defer>.
- * Depends on: the global `Dexie` (dexie.js CDN) and, when online, the
- * Google Identity Services script (#gis-script in index.html).
+ * Loaded by index.html with <script src="app.js" defer>, AFTER herd.js.
+ * Depends on: the global `Dexie` (dexie.js CDN), window.MaweHerd (herd.js,
+ * the herd register) and, when online, the Google Identity Services
+ * script (#gis-script in index.html).
  * Works with: sw.js (offline app shell) and Code.gs (Apps Script backend).
  *
  * Sections
@@ -15,10 +16,11 @@
  *   5. Data-access layer
  *   6. Validation
  *   7. Form submit handlers
- *   8. Tab navigation
- *   9. Status UI: sync badge, header detail, recent lists, ID suggestions
+ *   8. Tab navigation (Milk / Calf Feed / Herd)
+ *   9. Status UI: sync badge, header detail, recent lists
  *  10. Authentication (Google Sign-In, offline session, logout)
- *  11. Sync engine  (IndexedDB -> Apps Script -> Google Sheets)
+ *  11. Sync engine  (IndexedDB <-> Apps Script <-> Google Sheets;
+ *      animals are pushed AND pulled, log entries are pushed only)
  *  12. Service worker registration + update banner
  *  13. Boot
  * ===================================================================== */
@@ -46,7 +48,9 @@
     RETRY_BASE_MS: 30000,           // first retry after a failure…
     RETRY_MAX_MS: 15 * 60000,       // …doubling up to 15 minutes
     SAVE_DEBOUNCE_MS: 2000,         // wait 2 s after a save so quick entries go in one batch
-    SYNCED_RETENTION_DAYS: 30,      // synced rows are pruned from the phone after this
+    SYNCED_RETENTION_DAYS: 30,      // synced log rows are pruned after this (animals never are)
+    HERD_PULL_INTERVAL_MS: 10 * 60000, // download the herd list at most every 10 min…
+    HERD_OPEN_PULL_MS: 2 * 60000,      // …or every 2 min while the Herd tab is being opened
   });
 
   const AUTH_CONFIG = Object.freeze({
@@ -65,10 +69,14 @@
 
   const DB_NAME = 'MaweTatuDairyDB';
 
+  // Append-only log stores (pushed to the sheet, pruned after 30 days).
   const STORES = Object.freeze({
     MILK: 'milk_logs',
     CALF: 'calf_logs',
   });
+
+  // The herd register store (managed by herd.js; pushed AND pulled, never pruned).
+  const ANIMALS = 'animals';
 
   // pending -> (upload) -> synced
   // pending -> (server rejected the record) -> failed -> retried each run
@@ -86,10 +94,11 @@
 
   // Exactly which fields are sent to the server for each store.
   // recordedBy = email of the person signed in when the entry was saved;
-  // Code.gs writes it to the Recorded_By column.
+  // Code.gs writes it to the Recorded_By column. cowName / calfName are the
+  // animal's name at the time (CowName / CalfName columns, for readability).
   const PAYLOAD_FIELDS = Object.freeze({
-    [STORES.MILK]: ['clientId', 'deviceId', 'date', 'cowId', 'session', 'litres', 'recordedBy', 'createdAt'],
-    [STORES.CALF]: ['clientId', 'deviceId', 'date', 'calfId', 'feedType', 'quantityKg', 'recordedBy', 'createdAt'],
+    [STORES.MILK]: ['clientId', 'deviceId', 'date', 'cowId', 'cowName', 'session', 'litres', 'recordedBy', 'createdAt'],
+    [STORES.CALF]: ['clientId', 'deviceId', 'date', 'calfId', 'calfName', 'feedType', 'quantityKg', 'recordedBy', 'createdAt'],
   });
 
   // The three daily milkings at Mawe Tatu: ~5:00 am, ~1:00 pm, ~8:30 pm.
@@ -102,6 +111,10 @@
   const LAST_SYNC_KEY = 'mt_last_sync_at';  // localStorage: last successful sync time
   const SESSION_KEY = 'mt_session';         // localStorage: signed-in user + ID token
   const SYNC_LOCK_NAME = 'mawe-tatu-sync';  // Web Locks name (one sync across all tabs)
+  const LAST_PULL_KEY = 'mt_last_herd_pull'; // localStorage: last herd list download (ms)
+
+  // Sync reasons that always download the herd list (others wait for the interval).
+  const FORCED_PULL_REASONS = ['startup', 'manual', 'signed-in'];
 
   const GOOGLE_ISSUERS = ['accounts.google.com', 'https://accounts.google.com'];
 
@@ -113,8 +126,15 @@
    *                           clientIds it already has (no duplicate rows)
    *   syncStatus              finds pending/failed rows quickly
    *   [cowId+session+date]    duplicate-entry warning on the form
-   * recordedBy is stored on each row but not indexed, so no schema change
-   * is needed. If you ever change the schema, ADD db.version(2) below.
+   * recordedBy, cowName and calfName are stored but not indexed.
+   *
+   * Version 2 (herd register) adds the `animals` store:
+   *   animalId                primary key: MT-001 (farm) / X-001 (outside animal)
+   *   syncStatus              finds animals with unsent edits
+   *   herd, status, category  list filters and dropdowns
+   *   damId                   offspring lookups
+   * Existing milk and calf rows are untouched by the upgrade. Never edit
+   * an old version block; add db.version(3) for the next schema change.
    * ------------------------------------------------------------------ */
 
   const db = new Dexie(DB_NAME);
@@ -123,6 +143,13 @@
     [STORES.MILK]: '++id, &clientId, syncStatus, date, cowId, [cowId+session+date], createdAt',
     [STORES.CALF]: '++id, &clientId, syncStatus, date, calfId, [calfId+feedType+date], createdAt',
   });
+
+  db.version(2).stores({
+    [ANIMALS]: 'animalId, syncStatus, herd, status, category, damId, updatedAt',
+  });
+
+  /** The herd register module (herd.js). Created in init() once the DB is open. */
+  let herd = null;
 
   /* ------------------------------------------------------------------
    * 4. UTILITY HELPERS
@@ -228,14 +255,14 @@
     };
   }
 
-  async function addMilkLog({ cowId, session: milkSession, litres, date }) {
-    const record = { ...baseMeta(), cowId, session: milkSession, litres, date };
+  async function addMilkLog({ cowId, cowName = '', session: milkSession, litres, date }) {
+    const record = { ...baseMeta(), cowId, cowName, session: milkSession, litres, date };
     record.id = await db[STORES.MILK].add(record);
     return record;
   }
 
-  async function addCalfLog({ calfId, feedType, quantityKg, date }) {
-    const record = { ...baseMeta(), calfId, feedType, quantityKg, date };
+  async function addCalfLog({ calfId, calfName = '', feedType, quantityKg, date }) {
+    const record = { ...baseMeta(), calfId, calfName, feedType, quantityKg, date };
     record.id = await db[STORES.CALF].add(record);
     return record;
   }
@@ -255,13 +282,15 @@
       .sortBy('createdAt');
   }
 
+  /** Everything waiting to upload: log entries plus animals with unsent edits. */
   async function countPending() {
     const statuses = [SYNC_STATUS.PENDING, SYNC_STATUS.FAILED];
-    const [m, c] = await Promise.all([
+    const [m, c, a] = await Promise.all([
       db[STORES.MILK].where('syncStatus').anyOf(statuses).count(),
       db[STORES.CALF].where('syncStatus').anyOf(statuses).count(),
+      db[ANIMALS].where('syncStatus').anyOf(statuses).count(),
     ]);
-    return m + c;
+    return m + c + a;
   }
 
   /** Mark rows as uploaded — called ONLY after the server confirmed them. */
@@ -325,8 +354,8 @@
     const litres = parseFloat(form.litres.value);
     const date = form.date.value;
 
-    if (!cowId) return { ok: false, error: 'Cow ID is required.' };
-    if (!ID_PATTERN.test(cowId)) return { ok: false, error: 'Cow ID: use letters, numbers, - or _ (max 20).' };
+    if (!cowId) return { ok: false, error: 'Choose a cow.' };
+    if (!ID_PATTERN.test(cowId)) return { ok: false, error: 'That cow ID is not valid.' };
     if (!MILK_SESSIONS.includes(milkSession)) return { ok: false, error: 'Choose Morning, Afternoon or Evening.' };
     if (!Number.isFinite(litres) || litres <= 0) return { ok: false, error: 'Enter litres greater than 0.' };
     if (litres > 60) return { ok: false, error: 'Litres look too high for one session (max 60).' };
@@ -342,8 +371,8 @@
     const quantityKg = parseFloat(form.quantityKg.value);
     const date = form.date.value;
 
-    if (!calfId) return { ok: false, error: 'Calf ID is required.' };
-    if (!ID_PATTERN.test(calfId)) return { ok: false, error: 'Calf ID: use letters, numbers, - or _ (max 20).' };
+    if (!calfId) return { ok: false, error: 'Choose a calf.' };
+    if (!ID_PATTERN.test(calfId)) return { ok: false, error: 'That calf ID is not valid.' };
     if (!FEED_TYPES.includes(feedType)) return { ok: false, error: 'Choose a feed type.' };
     if (!Number.isFinite(quantityKg) || quantityKg <= 0) return { ok: false, error: 'Enter a quantity greater than 0.' };
     if (quantityKg > 50) return { ok: false, error: 'Quantity looks too high (max 50 kg).' };
@@ -356,8 +385,9 @@
   /* ------------------------------------------------------------------
    * 7. FORM SUBMIT HANDLERS
    * ------------------------------------------------------------------
-   * validate -> duplicate check -> save to IndexedDB -> reset -> queue sync.
+   * validate -> herd check -> duplicate check -> save to IndexedDB -> reset -> queue sync.
    * Forms are only reachable while signed in (see section 10).
+   * The animal's current name is saved with each entry (cowName / calfName).
    * ------------------------------------------------------------------ */
 
   async function handleMilkSubmit(event) {
@@ -371,20 +401,30 @@
     const result = validateMilk(form);
     if (!result.ok) { showFormError('milk', result.error); return; }
     const { cowId, session: milkSession, date } = result.data;
+    const cow = herd ? herd.getAnimal(cowId) : null;
+    const who = cow ? cow.name : cowId;
+
+    // A cow not marked Lactating may simply have calved since her status was
+    // last updated, so warn rather than block.
+    if (cow && cow.milkingStatus !== 'Lactating' &&
+        !confirm(`${who} is marked "${cow.milkingStatus}" in the herd register.\nSave the milk anyway?\n\n(Update her milking status in the Herd tab after she calves.)`)) {
+      return;
+    }
 
     btn.disabled = true;
     try {
       const dup = await findMilkDuplicate(cowId, milkSession, date);
-      if (dup && !confirm(`${cowId} already has ${dup.litres} L for ${milkSession} on ${date}.\nSave another entry anyway?`)) {
+      if (dup && !confirm(`${who} already has ${dup.litres} L for ${milkSession} on ${date}.\nSave another entry anyway?`)) {
         return;
       }
 
-      await addMilkLog(result.data);
-      toast(`Saved: ${cowId} · ${result.data.litres} L (${milkSession})`);
+      await addMilkLog({ ...result.data, cowName: cow ? cow.name : '' });
+      toast(`Saved: ${who} · ${result.data.litres} L (${milkSession})`);
 
-      form.cowId.value = '';
+      // Move on to the next milking cow so a whole session is quick to enter.
+      form.cowId.value = herd ? herd.nextMilkingCow(cowId) : '';
       form.litres.value = '';
-      form.cowId.focus();
+      (form.cowId.value ? form.litres : form.cowId).focus();
 
       requestSync('new-record', SYNC_CONFIG.SAVE_DEBOUNCE_MS);
     } catch (err) {
@@ -406,16 +446,18 @@
     const result = validateCalf(form);
     if (!result.ok) { showFormError('calf', result.error); return; }
     const { calfId, feedType, date } = result.data;
+    const calfAnimal = herd ? herd.getAnimal(calfId) : null;
+    const who = calfAnimal ? calfAnimal.name : calfId;
 
     btn.disabled = true;
     try {
       const dup = await findCalfDuplicate(calfId, feedType, date);
-      if (dup && !confirm(`${calfId} already has ${dup.quantityKg} kg of ${feedType} on ${date}.\nSave another feeding anyway?`)) {
+      if (dup && !confirm(`${who} already has ${dup.quantityKg} kg of ${feedType} on ${date}.\nSave another feeding anyway?`)) {
         return;
       }
 
-      await addCalfLog(result.data);
-      toast(`Saved: ${calfId} · ${result.data.quantityKg} kg ${feedType}`);
+      await addCalfLog({ ...result.data, calfName: calfAnimal ? calfAnimal.name : '' });
+      toast(`Saved: ${who} · ${result.data.quantityKg} kg ${feedType}`);
 
       form.calfId.value = '';
       form.quantityKg.value = '';
@@ -437,6 +479,7 @@
   const TAB_STYLES = {
     milk: { active: ['bg-farm-700', 'text-white', 'shadow'], idle: ['text-slate-600', 'hover:bg-slate-100'] },
     calf: { active: ['bg-calf-600', 'text-white', 'shadow'], idle: ['text-slate-600', 'hover:bg-slate-100'] },
+    herd: { active: ['bg-sky-700', 'text-white', 'shadow'], idle: ['text-slate-600', 'hover:bg-slate-100'] },
   };
 
   function activateTab(name) {
@@ -453,6 +496,13 @@
     });
 
     lsSet(TAB_KEY, name);
+
+    // Opening the Herd tab refreshes the herd list from the sheet (throttled).
+    if (name === 'herd' && session && navigator.onLine &&
+        Date.now() - lastPullAt() > SYNC_CONFIG.HERD_OPEN_PULL_MS) {
+      sync.forcePull = true;
+      requestSync('herd-open', 0);
+    }
   }
 
   /* ------------------------------------------------------------------
@@ -495,7 +545,7 @@
       detail = lastError || `Tap to sign in again and upload ${pending} record${plural}`;
     } else if (syncState === 'syncing') {
       dot = ['bg-yellow-200', 'animate-pulse']; label = 'Syncing…';
-      detail = `Uploading ${pending} record${plural}…`;
+      detail = pending ? `Uploading ${pending} record${plural}…` : 'Updating the herd list…';
     } else if (syncState === 'error') {
       dot = ['bg-orange-300']; label = 'Sync error';
       detail = lastError ? `Will retry · ${lastError}` : 'Will retry automatically';
@@ -550,10 +600,6 @@
     }).join('');
   }
 
-  function fillDatalist(el, ids) {
-    el.innerHTML = ids.map((id) => `<option value="${esc(id)}"></option>`).join('');
-  }
-
   /** liveQuery re-runs whenever the tables it read change, so the UI
    *  never needs manual refresh. */
   function startLiveViews() {
@@ -567,7 +613,7 @@
     liveQuery(() => db[STORES.MILK].orderBy('createdAt').reverse().limit(RECENT_LIMIT).toArray())
       .subscribe({
         next: (rows) => renderRecent($('#milk-recent'), rows,
-          (r) => `${esc(r.cowId)} · ${r.litres} L <span class="font-normal text-slate-500">${esc(r.session)}</span>`,
+          (r) => `${esc(r.cowName || r.cowId)} · ${r.litres} L <span class="font-normal text-slate-500">${esc(r.session)}</span>`,
           STORES.MILK),
         error: (e) => console.error('Milk list query failed:', e),
       });
@@ -575,15 +621,12 @@
     liveQuery(() => db[STORES.CALF].orderBy('createdAt').reverse().limit(RECENT_LIMIT).toArray())
       .subscribe({
         next: (rows) => renderRecent($('#calf-recent'), rows,
-          (r) => `${esc(r.calfId)} · ${r.quantityKg} kg <span class="font-normal text-slate-500">${esc(r.feedType)}</span>`,
+          (r) => `${esc(r.calfName || r.calfId)} · ${r.quantityKg} kg <span class="font-normal text-slate-500">${esc(r.feedType)}</span>`,
           STORES.CALF),
         error: (e) => console.error('Calf list query failed:', e),
       });
 
-    liveQuery(() => db[STORES.MILK].orderBy('cowId').uniqueKeys())
-      .subscribe({ next: (ids) => fillDatalist($('#cow-suggestions'), ids) });
-    liveQuery(() => db[STORES.CALF].orderBy('calfId').uniqueKeys())
-      .subscribe({ next: (ids) => fillDatalist($('#calf-suggestions'), ids) });
+    // The cow and calf dropdowns are filled by herd.js from the herd register.
   }
 
   async function handleListClick(event) {
@@ -972,19 +1015,30 @@
    * 2 s after a save, every 60 s, after signing in, badge tap, and on a
    * backoff schedule (30 s → 15 min) after failures.
    *
-   * A run: snapshot pending + failed rows → POST in batches of 25 with
-   * the Google ID token → mark ONLY server-confirmed rows as synced.
+   * A run, in order:
+   *   1. Animals with unsent edits → upsertAnimals (batches of 25). Animals
+   *      go first so a cow added offline is in the sheet before her milk.
+   *   2. Milk and calf entries → appendRecords (batches of 25).
+   *   3. When due, download the herd list → listAnimals → herd.mergePulled.
+   *      Due = startup, sign-in, badge tap, Herd tab opened (≥ 2 min since
+   *      the last download), every 10 min, or after a 'stale' upload.
+   * Only server-confirmed rows/animals are marked synced.
    *   • network error (offline/timeout): rows untouched, retry later
    *   • server error: rows marked failed with the reason, retried
    *   • auth error (token expired / not allowed): rows untouched, the
    *     badge asks the user to sign in; no pointless retries meanwhile
-   * Resending is safe: Code.gs skips clientIds it already has.
+   * Resending is safe: Code.gs skips clientIds it already has, and for
+   * animals keeps whichever version has the newer updatedAt.
    *
    * Server contract (Code.gs):
    *   Request (POST, text/plain to avoid a CORS preflight):
    *     { action: 'appendRecords', idToken, sheet, records: [ {...}, … ] }
+   *     { action: 'upsertAnimals', idToken, records: [ {...}, … ] }
+   *     { action: 'listAnimals', idToken }
    *   Response:
    *     { status: 'success', results: [ { clientId, status: 'saved'|'duplicate'|'rejected', error? } ] }
+   *     { status: 'success', results: [ { animalId, status: 'saved'|'duplicate'|'stale'|'rejected', error? } ] }
+   *     { status: 'success', animals: [ {...}, … ] }
    *     { status: 'error', code?, message }   code: AUTH_EXPIRED | AUTH_INVALID | AUTH_FORBIDDEN
    * ------------------------------------------------------------------ */
 
@@ -1004,6 +1058,7 @@
     running: false,
     rerunRequested: false,
     consecutiveFailures: 0,
+    forcePull: false,        // download the herd list on the next run regardless of the interval
   };
 
   function isEndpointConfigured() {
@@ -1012,8 +1067,16 @@
 
   /** Schedule a sync run after `delayMs`. A newer request replaces an older one. */
   function requestSync(reason, delayMs = 0) {
+    if (FORCED_PULL_REASONS.includes(reason)) sync.forcePull = true;
     clearTimeout(sync.timer);
     sync.timer = setTimeout(() => runSync(reason), delayMs);
+  }
+
+  /** When the herd list was last downloaded (ms since epoch, 0 = never). */
+  function lastPullAt() { return Number(lsGet(LAST_PULL_KEY)) || 0; }
+
+  function isPullDue() {
+    return sync.forcePull || Date.now() - lastPullAt() > SYNC_CONFIG.HERD_PULL_INTERVAL_MS;
   }
 
   function backoffDelay(failures) {
@@ -1054,20 +1117,36 @@
 
     try {
       const pendingNow = await countPending();
+      const pullDue = isPullDue();
+      const herdEmpty = !!herd && herd.isEmpty();
 
-      if (pendingNow === 0) {
+      if (pendingNow === 0 && !pullDue) {
         setStatus({ sync: 'idle', lastError: null });
       } else if (!session) {
         // Signed out: records wait until somebody signs in.
-        setStatus({ sync: 'auth', lastError: `Sign in to upload ${pendingNow} record${pendingNow === 1 ? '' : 's'}` });
-        schedule = false;
+        if (pendingNow > 0) {
+          setStatus({ sync: 'auth', lastError: `Sign in to upload ${pendingNow} record${pendingNow === 1 ? '' : 's'}` });
+          schedule = false;
+        } else {
+          setStatus({ sync: 'idle', lastError: null });
+        }
       } else if (!hasFreshToken()) {
-        setStatus({ sync: 'auth', lastError: null });
-        trySilentRefresh(); // on success, handleCredentialResponse restarts sync
-        schedule = false;
+        if (pendingNow > 0 || herdEmpty) {
+          setStatus({ sync: 'auth', lastError: pendingNow > 0 ? null : 'Sign in again to download the herd list' });
+          trySilentRefresh(); // on success, handleCredentialResponse restarts sync
+          schedule = false;
+        } else {
+          // Only a routine herd refresh is due: it can wait for the next sign-in.
+          setStatus({ sync: 'idle' });
+        }
       } else {
         setStatus({ sync: 'syncing' });
-        const outcome = await withSyncLock(syncAllStores);
+        const outcome = await withSyncLock(async () => {
+          const totals = await syncAllStores();
+          // A 'stale' animal means the sheet holds a newer version: fetch it now.
+          if (pullDue || totals.stale > 0) totals.pulled = await pullAnimals();
+          return totals;
+        });
 
         if (!outcome.skipped) {
           const now = new Date().toISOString();
@@ -1083,8 +1162,12 @@
           } else {
             setStatus({ sync: 'idle', lastSyncAt: now, lastError: null });
           }
-          if (outcome.uploaded > 0 && reason === 'manual') {
+          if (outcome.stale > 0) {
+            toast(`${outcome.stale} animal${outcome.stale === 1 ? ' was' : 's were'} changed on another phone: kept the newer version`, 'info');
+          } else if (outcome.uploaded > 0 && reason === 'manual') {
             toast(`Uploaded ${outcome.uploaded} record${outcome.uploaded === 1 ? '' : 's'}`);
+          } else if (reason === 'manual' && outcome.pulled && (outcome.pulled.added + outcome.pulled.updated) > 0) {
+            toast('Herd list updated', 'info');
           }
         } else {
           setStatus({ sync: 'idle' });
@@ -1119,7 +1202,10 @@
   }
 
   async function syncAllStores() {
-    const totals = { uploaded: 0, rejected: 0 };
+    // 1. Animals first, so a cow added offline exists before her milk rows.
+    const herdTotals = await syncAnimals();
+    const totals = { uploaded: herdTotals.uploaded, rejected: herdTotals.rejected, stale: herdTotals.stale };
+    // 2. Append-only log entries.
     for (const storeName of Object.values(STORES)) {
       const { uploaded, rejected } = await syncStore(storeName);
       totals.uploaded += uploaded;
@@ -1164,6 +1250,68 @@
     return totals;
   }
 
+  /**
+   * Push animals with unsent edits (upsertAnimals). herd.inFlight blocks
+   * renumbering or deleting an animal while its upload is under way.
+   */
+  async function syncAnimals() {
+    const totals = { uploaded: 0, rejected: 0, stale: 0 };
+    if (!herd) return totals;
+    const rows = await herd.getPendingAnimals();
+
+    for (let i = 0; i < rows.length; i += SYNC_CONFIG.BATCH_SIZE) {
+      const batch = rows.slice(i, i + SYNC_CONFIG.BATCH_SIZE);
+      batch.forEach((r) => herd.inFlight.add(r.animalId));
+
+      try {
+        // Re-read: an animal may have been edited, renumbered or deleted meanwhile.
+        const live = (await db[ANIMALS].bulkGet(batch.map((r) => r.animalId)))
+          .filter((r) => r && r.syncStatus !== SYNC_STATUS.SYNCED);
+        if (!live.length) continue;
+
+        let data;
+        try {
+          data = await callServer({ action: 'upsertAnimals', records: live.map(herd.toPayload) });
+        } catch (err) {
+          if (err instanceof SyncError && err.kind === 'server') {
+            // Note the reason on each animal WITHOUT touching updatedAt (it is the version).
+            const msg = String(err.message || 'Server error').slice(0, 200);
+            await db[ANIMALS].where(':id').anyOf(live.map((r) => r.animalId)).modify((rec) => {
+              rec.syncStatus = SYNC_STATUS.FAILED;
+              rec.syncAttempts = (rec.syncAttempts || 0) + 1;
+              rec.lastError = msg;
+            });
+          }
+          throw err;
+        }
+        if (!Array.isArray(data.results)) {
+          throw new SyncError('Apps Script reply is missing the results list', 'server');
+        }
+
+        const t = await herd.applyPushResults(live, data.results);
+        totals.uploaded += t.uploaded;
+        totals.rejected += t.rejected;
+        totals.stale += t.stale;
+      } finally {
+        batch.forEach((r) => herd.inFlight.delete(r.animalId));
+      }
+    }
+    return totals;
+  }
+
+  /** Download the herd list from the Animals sheet and merge it (listAnimals). */
+  async function pullAnimals() {
+    if (!herd) return { added: 0, updated: 0, removed: 0 };
+    const data = await callServer({ action: 'listAnimals' });
+    if (!Array.isArray(data.animals)) {
+      throw new SyncError('Apps Script reply is missing the animals list', 'server');
+    }
+    const result = await herd.mergePulled(data.animals);
+    lsSet(LAST_PULL_KEY, String(Date.now()));
+    sync.forcePull = false;
+    return result;
+  }
+
   /** Build the minimal payload for one row. Rows saved before sign-in
    *  existed have no recordedBy; Code.gs then uses the uploader's email. */
   function toPayload(storeName, record) {
@@ -1172,16 +1320,29 @@
     return out;
   }
 
-  /** POST one batch. Returns the server's results array or throws SyncError. */
+  /** POST one batch of log entries. Returns the server's results array or throws SyncError. */
   async function postBatch(storeName, records) {
-    if (!hasFreshToken()) throw new SyncError('Sign in again to upload', 'auth');
-
-    const body = JSON.stringify({
+    const data = await callServer({
       action: 'appendRecords',
-      idToken: session.idToken,
       sheet: SHEET_FOR_STORE[storeName],
       records: records.map((r) => toPayload(storeName, r)),
     });
+    if (!Array.isArray(data.results)) {
+      throw new SyncError('Apps Script reply is missing the results list', 'server');
+    }
+    return data.results;
+  }
+
+  /**
+   * POST any action to Apps Script with the current ID token.
+   * Returns the parsed { status: 'success', … } reply or throws a SyncError:
+   *   'network' (offline, timeout, 5xx) · 'server' (bad reply or server-side
+   *   error) · 'auth' (token expired / not allowed).
+   */
+  async function callServer(payload) {
+    if (!hasFreshToken()) throw new SyncError('Sign in again to upload', 'auth');
+
+    const body = JSON.stringify({ ...payload, idToken: session.idToken });
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), SYNC_CONFIG.REQUEST_TIMEOUT_MS);
@@ -1233,12 +1394,16 @@
         err.code = data.code;
         throw err;
       }
+      // An old Code.gs does not know the herd actions yet.
+      if (/^Unknown action/.test(String(data.message || ''))) {
+        throw new SyncError('Code.gs needs updating: paste the new version and redeploy', 'server');
+      }
       throw new SyncError(data.message || 'Apps Script reported an error', 'server');
     }
-    if (!data || data.status !== 'success' || !Array.isArray(data.results)) {
-      throw new SyncError('Apps Script reply is missing the results list', 'server');
+    if (!data || data.status !== 'success') {
+      throw new SyncError('Unexpected reply from Apps Script', 'server');
     }
-    return data.results;
+    return data;
   }
 
   /** Apply per-row results. Only explicitly confirmed rows become 'synced'. */
@@ -1305,7 +1470,7 @@
       showAuthScreen('signin');
       return;
     }
-    if (status.sync === 'auth' && status.pending > 0) {
+    if (status.sync === 'auth' && (status.pending > 0 || (herd && herd.isEmpty()))) {
       showAuthScreen('reauth');
       return;
     }
@@ -1343,6 +1508,7 @@
       console.error('Service worker registration failed:', err);
       return;
     }
+    if (!swRegistration) return; // some browsers / privacy modes refuse service workers
 
     if (swRegistration.waiting && navigator.serviceWorker.controller) {
       showUpdateBanner(swRegistration.waiting);
@@ -1394,6 +1560,7 @@
     markSynced, markFailed, deleteUnsynced,
     syncNow: () => requestSync('manual', 0),
     currentUser: () => (session ? { email: session.email, name: session.name } : null),
+    get herd() { return herd; },   // e.g. FarmDB.herd.getAnimal('MT-001')
   });
 
   /* ------------------------------------------------------------------
@@ -1421,6 +1588,27 @@
         console.info('Persistent storage:', granted ? 'granted' : 'not granted (best-effort)');
       });
     }
+
+    // Herd register (herd.js): list, form and the cow / calf dropdowns.
+    if (!window.MaweHerd) {
+      toast('herd.js did not load. Connect once to finish setting up the app.', 'error');
+      return;
+    }
+    herd = window.MaweHerd.create({
+      db,
+      logStores: STORES,
+      SYNC_STATUS,
+      getSession: () => session,
+      getDeviceId,
+      makeUUID,
+      todayLocal,
+      esc,
+      toast,
+      requestSync,
+      activateTab,
+      saveDebounceMs: SYNC_CONFIG.SAVE_DEBOUNCE_MS,
+    });
+    herd.init();
 
     const today = todayLocal();
     ['#milk-date', '#calf-date'].forEach((sel) => {
