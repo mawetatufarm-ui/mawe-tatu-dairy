@@ -2,10 +2,10 @@
  * Mawe Tatu Dairy — app.js
  * Local-first storage (Dexie) + Google Sign-In + sync engine + service worker
  * ---------------------------------------------------------------------
- * Loaded by index.html with <script src="app.js" defer>, AFTER herd.js.
+ * Loaded by index.html with <script src="app.js" defer>, AFTER herd.js and sales.js.
  * Depends on: the global `Dexie` (dexie.js CDN), window.MaweHerd (herd.js,
- * the herd register) and, when online, the Google Identity Services
- * script (#gis-script in index.html).
+ * the herd register), window.MaweSales (sales.js, the Sales tab) and, when
+ * online, the Google Identity Services script (#gis-script in index.html).
  * Works with: sw.js (offline app shell) and Code.gs (Apps Script backend).
  *
  * Sections
@@ -16,7 +16,7 @@
  *   5. Data-access layer
  *   6. Validation
  *   7. Form submit handlers
- *   8. Tab navigation (Milk / Calf Feed / Herd)
+ *   8. Tab navigation (Milk / Calf Feed / Herd / Sales)
  *   9. Status UI: sync badge, header detail, recent lists
  *  10. Authentication (Google Sign-In, offline session, logout)
  *  11. Sync engine  (IndexedDB <-> Apps Script <-> Google Sheets;
@@ -78,6 +78,18 @@
   // The herd register store (managed by herd.js; pushed AND pulled, never pruned).
   const ANIMALS = 'animals';
 
+  // Sales stores (managed by sales.js). Names match window.MaweSales.STORES.
+  const SALES = Object.freeze({
+    CUSTOMERS: 'customers', PRICES: 'prices', SALES: 'sales', PAYMENTS: 'payments', RETURNS: 'returns', KV: 'kv',
+  });
+
+  // Append-only stores, in upload order: prices before sales, sales before the
+  // payments and returns that refer to them.
+  const APPEND_STORES = Object.freeze([SALES.PRICES, STORES.MILK, STORES.CALF, SALES.SALES, SALES.PAYMENTS, SALES.RETURNS]);
+  // Synced rows of these are removed from the phone after 30 days (prices are
+  // kept: the sheet's list replaces them on every download).
+  const PRUNE_STORES = Object.freeze([STORES.MILK, STORES.CALF, SALES.SALES, SALES.PAYMENTS, SALES.RETURNS]);
+
   // pending -> (upload) -> synced
   // pending -> (server rejected the record) -> failed -> retried each run
   const SYNC_STATUS = Object.freeze({
@@ -90,6 +102,10 @@
   const SHEET_FOR_STORE = Object.freeze({
     [STORES.MILK]: 'Milk_Production',
     [STORES.CALF]: 'Calf_Records',
+    [SALES.PRICES]: 'Prices',
+    [SALES.SALES]: 'Sales',
+    [SALES.PAYMENTS]: 'Payments',
+    [SALES.RETURNS]: 'Returns',
   });
 
   // Exactly which fields are sent to the server for each store.
@@ -99,6 +115,8 @@
   const PAYLOAD_FIELDS = Object.freeze({
     [STORES.MILK]: ['clientId', 'deviceId', 'date', 'cowId', 'cowName', 'session', 'litres', 'recordedBy', 'createdAt'],
     [STORES.CALF]: ['clientId', 'deviceId', 'date', 'calfId', 'calfName', 'feedType', 'quantityKg', 'recordedBy', 'createdAt'],
+    // Sales stores: the field lists live in sales.js (MaweSales.PAYLOAD).
+    ...((window.MaweSales && window.MaweSales.PAYLOAD) || {}),
   });
 
   // The three daily milkings at Mawe Tatu: ~5:00 am, ~1:00 pm, ~8:30 pm.
@@ -111,7 +129,7 @@
   const LAST_SYNC_KEY = 'mt_last_sync_at';  // localStorage: last successful sync time
   const SESSION_KEY = 'mt_session';         // localStorage: signed-in user + ID token
   const SYNC_LOCK_NAME = 'mawe-tatu-sync';  // Web Locks name (one sync across all tabs)
-  const LAST_PULL_KEY = 'mt_last_herd_pull'; // localStorage: last herd list download (ms)
+  const LAST_PULL_KEY = 'mt_last_herd_pull'; // localStorage: last herd + customer list download (ms)
 
   // Sync reasons that always download the herd list (others wait for the interval).
   const FORCED_PULL_REASONS = ['startup', 'manual', 'signed-in'];
@@ -133,8 +151,8 @@
    *   syncStatus              finds animals with unsent edits
    *   herd, status, category  list filters and dropdowns
    *   damId                   offspring lookups
-   * Existing milk and calf rows are untouched by the upgrade. Never edit
-   * an old version block; add db.version(3) for the next schema change.
+   * Existing milk and calf rows are untouched by the upgrades. Never edit
+   * an old version block; add db.version(4) for the next schema change.
    * ------------------------------------------------------------------ */
 
   const db = new Dexie(DB_NAME);
@@ -148,8 +166,21 @@
     [ANIMALS]: 'animalId, syncStatus, herd, status, category, damId, updatedAt',
   });
 
+  /* Version 3 (sales) adds customers, prices, sales, payments, returns and a
+   * small key-value store for the server's balances snapshot. */
+  db.version(3).stores({
+    [SALES.CUSTOMERS]: 'customerId, syncStatus, status, updatedAt',
+    [SALES.PRICES]: '++id, &clientId, syncStatus, customerId, date',
+    [SALES.SALES]: '++id, &clientId, syncStatus, date, customerId, saleId, createdAt',
+    [SALES.PAYMENTS]: '++id, &clientId, syncStatus, date, customerId, paymentId, createdAt',
+    [SALES.RETURNS]: '++id, &clientId, syncStatus, date, saleId, customerId, createdAt',
+    [SALES.KV]: 'key',
+  });
+
   /** The herd register module (herd.js). Created in init() once the DB is open. */
   let herd = null;
+  /** The sales module (sales.js). Created in init(). */
+  let sales = null;
 
   /* ------------------------------------------------------------------
    * 4. UTILITY HELPERS
@@ -282,15 +313,12 @@
       .sortBy('createdAt');
   }
 
-  /** Everything waiting to upload: log entries plus animals with unsent edits. */
+  /** Everything waiting to upload: entries, plus animals and customers with unsent edits. */
   async function countPending() {
     const statuses = [SYNC_STATUS.PENDING, SYNC_STATUS.FAILED];
-    const [m, c, a] = await Promise.all([
-      db[STORES.MILK].where('syncStatus').anyOf(statuses).count(),
-      db[STORES.CALF].where('syncStatus').anyOf(statuses).count(),
-      db[ANIMALS].where('syncStatus').anyOf(statuses).count(),
-    ]);
-    return m + c + a;
+    const counts = await Promise.all([ANIMALS, SALES.CUSTOMERS].concat(APPEND_STORES)
+      .map((name) => db[name].where('syncStatus').anyOf(statuses).count()));
+    return counts.reduce((t, n) => t + n, 0);
   }
 
   /** Mark rows as uploaded — called ONLY after the server confirmed them. */
@@ -480,6 +508,7 @@
     milk: { active: ['bg-farm-700', 'text-white', 'shadow'], idle: ['text-slate-600', 'hover:bg-slate-100'] },
     calf: { active: ['bg-calf-600', 'text-white', 'shadow'], idle: ['text-slate-600', 'hover:bg-slate-100'] },
     herd: { active: ['bg-sky-700', 'text-white', 'shadow'], idle: ['text-slate-600', 'hover:bg-slate-100'] },
+    sales: { active: ['bg-violet-700', 'text-white', 'shadow'], idle: ['text-slate-600', 'hover:bg-slate-100'] },
   };
 
   function activateTab(name) {
@@ -497,8 +526,8 @@
 
     lsSet(TAB_KEY, name);
 
-    // Opening the Herd tab refreshes the herd list from the sheet (throttled).
-    if (name === 'herd' && session && navigator.onLine &&
+    // Opening the Herd or Sales tab refreshes the lists and balances from the sheet (throttled).
+    if ((name === 'herd' || name === 'sales') && session && navigator.onLine &&
         Date.now() - lastPullAt() > SYNC_CONFIG.HERD_OPEN_PULL_MS) {
       sync.forcePull = true;
       requestSync('herd-open', 0);
@@ -545,7 +574,7 @@
       detail = lastError || `Tap to sign in again and upload ${pending} record${plural}`;
     } else if (syncState === 'syncing') {
       dot = ['bg-yellow-200', 'animate-pulse']; label = 'Syncing…';
-      detail = pending ? `Uploading ${pending} record${plural}…` : 'Updating the herd list…';
+      detail = pending ? `Uploading ${pending} record${plural}…` : 'Updating the herd and customer lists…';
     } else if (syncState === 'error') {
       dot = ['bg-orange-300']; label = 'Sync error';
       detail = lastError ? `Will retry · ${lastError}` : 'Will retry automatically';
@@ -1118,7 +1147,7 @@
     try {
       const pendingNow = await countPending();
       const pullDue = isPullDue();
-      const herdEmpty = !!herd && herd.isEmpty();
+      const herdEmpty = (!!herd && herd.isEmpty()) || (!!sales && sales.isEmpty());
 
       if (pendingNow === 0 && !pullDue) {
         setStatus({ sync: 'idle', lastError: null });
@@ -1132,7 +1161,7 @@
         }
       } else if (!hasFreshToken()) {
         if (pendingNow > 0 || herdEmpty) {
-          setStatus({ sync: 'auth', lastError: pendingNow > 0 ? null : 'Sign in again to download the herd list' });
+          setStatus({ sync: 'auth', lastError: pendingNow > 0 ? null : 'Sign in again to download the herd and customer lists' });
           trySilentRefresh(); // on success, handleCredentialResponse restarts sync
           schedule = false;
         } else {
@@ -1143,8 +1172,11 @@
         setStatus({ sync: 'syncing' });
         const outcome = await withSyncLock(async () => {
           const totals = await syncAllStores();
-          // A 'stale' animal means the sheet holds a newer version: fetch it now.
-          if (pullDue || totals.stale > 0) totals.pulled = await pullAnimals();
+          // A 'stale' animal or customer means the sheet holds a newer version: fetch it now.
+          if (pullDue || totals.stale > 0) {
+            totals.pulled = await pullAnimals();
+            await pullSales();
+          }
           return totals;
         });
 
@@ -1163,7 +1195,7 @@
             setStatus({ sync: 'idle', lastSyncAt: now, lastError: null });
           }
           if (outcome.stale > 0) {
-            toast(`${outcome.stale} animal${outcome.stale === 1 ? ' was' : 's were'} changed on another phone: kept the newer version`, 'info');
+            toast(`${outcome.stale} record${outcome.stale === 1 ? ' was' : 's were'} changed elsewhere: kept the newer version`, 'info');
           } else if (outcome.uploaded > 0 && reason === 'manual') {
             toast(`Uploaded ${outcome.uploaded} record${outcome.uploaded === 1 ? '' : 's'}`);
           } else if (reason === 'manual' && outcome.pulled && (outcome.pulled.added + outcome.pulled.updated) > 0) {
@@ -1174,7 +1206,7 @@
         }
       }
 
-      await Promise.all(Object.values(STORES).map(pruneSynced));
+      await Promise.all(PRUNE_STORES.map(pruneSynced));
     } catch (err) {
       if (err instanceof SyncError && err.kind === 'auth') {
         // Wait for a sign-in instead of retrying with a token that will fail again.
@@ -1202,11 +1234,17 @@
   }
 
   async function syncAllStores() {
-    // 1. Animals first, so a cow added offline exists before her milk rows.
+    // 1. Animals and customers first, so a cow or customer added offline
+    //    exists before the entries that refer to them.
     const herdTotals = await syncAnimals();
-    const totals = { uploaded: herdTotals.uploaded, rejected: herdTotals.rejected, stale: herdTotals.stale };
-    // 2. Append-only log entries.
-    for (const storeName of Object.values(STORES)) {
+    const custTotals = await syncCustomers();
+    const totals = {
+      uploaded: herdTotals.uploaded + custTotals.uploaded,
+      rejected: herdTotals.rejected + custTotals.rejected,
+      stale: herdTotals.stale + custTotals.stale,
+    };
+    // 2. Append-only entries, in APPEND_STORES order.
+    for (const storeName of APPEND_STORES) {
       const { uploaded, rejected } = await syncStore(storeName);
       totals.uploaded += uploaded;
       totals.rejected += rejected;
@@ -1310,6 +1348,52 @@
     lsSet(LAST_PULL_KEY, String(Date.now()));
     sync.forcePull = false;
     return result;
+  }
+
+  /** Push customers with unsent edits (upsertCustomers), like syncAnimals. */
+  async function syncCustomers() {
+    const totals = { uploaded: 0, rejected: 0, stale: 0 };
+    if (!sales) return totals;
+    const rows = await sales.getPendingCustomers();
+    for (let i = 0; i < rows.length; i += SYNC_CONFIG.BATCH_SIZE) {
+      const batch = rows.slice(i, i + SYNC_CONFIG.BATCH_SIZE);
+      batch.forEach((r) => sales.inFlightCustomers.add(r.customerId));
+      try {
+        const live = (await db[SALES.CUSTOMERS].bulkGet(batch.map((r) => r.customerId)))
+          .filter((r) => r && r.syncStatus !== SYNC_STATUS.SYNCED);
+        if (!live.length) continue;
+        let data;
+        try {
+          data = await callServer({ action: 'upsertCustomers', records: live.map(sales.customerPayload) });
+        } catch (err) {
+          if (err instanceof SyncError && err.kind === 'server') {
+            const msg = String(err.message || 'Server error').slice(0, 200);
+            await db[SALES.CUSTOMERS].where(':id').anyOf(live.map((r) => r.customerId)).modify((rec) => {
+              rec.syncStatus = SYNC_STATUS.FAILED;
+              rec.syncAttempts = (rec.syncAttempts || 0) + 1;
+              rec.lastError = msg;
+            });
+          }
+          throw err;
+        }
+        if (!Array.isArray(data.results)) throw new SyncError('Apps Script reply is missing the results list', 'server');
+        const t = await sales.applyCustomerResults(live, data.results);
+        totals.uploaded += t.uploaded;
+        totals.rejected += t.rejected;
+        totals.stale += t.stale;
+      } finally {
+        batch.forEach((r) => sales.inFlightCustomers.delete(r.customerId));
+      }
+    }
+    return totals;
+  }
+
+  /** Download customers, prices, balances and recent sales (listCustomers). */
+  async function pullSales() {
+    if (!sales) return null;
+    const data = await callServer({ action: 'listCustomers' });
+    if (!Array.isArray(data.customers)) throw new SyncError('Apps Script reply is missing the customer list', 'server');
+    return sales.mergeSnapshot(data);
   }
 
   /** Build the minimal payload for one row. Rows saved before sign-in
@@ -1416,6 +1500,14 @@
     const rejected = []; // [id, message]
     const unconfirmedIds = [];
 
+    // The sheet already had this Sale / Payment / Return ID: take the one it gave.
+    for (const rec of records) {
+      const res = byClientId.get(rec.clientId);
+      if (res && res.renamed && sales && (res.status === 'saved' || res.status === 'duplicate')) {
+        await sales.applyRename(storeName, rec, res.renamed);
+      }
+    }
+
     for (const rec of records) {
       const res = byClientId.get(rec.clientId);
       if (!res) unconfirmedIds.push(rec.id);
@@ -1470,7 +1562,7 @@
       showAuthScreen('signin');
       return;
     }
-    if (status.sync === 'auth' && (status.pending > 0 || (herd && herd.isEmpty()))) {
+    if (status.sync === 'auth' && (status.pending > 0 || (herd && herd.isEmpty()) || (sales && sales.isEmpty()))) {
       showAuthScreen('reauth');
       return;
     }
@@ -1561,6 +1653,7 @@
     syncNow: () => requestSync('manual', 0),
     currentUser: () => (session ? { email: session.email, name: session.name } : null),
     get herd() { return herd; },   // e.g. FarmDB.herd.getAnimal('MT-001')
+    get sales() { return sales; }, // e.g. FarmDB.sales.balanceOf('C-001')
   });
 
   /* ------------------------------------------------------------------
@@ -1609,6 +1702,26 @@
       saveDebounceMs: SYNC_CONFIG.SAVE_DEBOUNCE_MS,
     });
     herd.init();
+
+    // Sales tab (sales.js): sale, payment, return and customer forms.
+    if (!window.MaweSales) {
+      toast('sales.js did not load. Connect once to finish setting up the app.', 'error');
+      return;
+    }
+    sales = window.MaweSales.create({
+      db,
+      SYNC_STATUS,
+      getSession: () => session,
+      getDeviceId,
+      makeUUID,
+      todayLocal,
+      esc,
+      toast,
+      requestSync,
+      saveDebounceMs: SYNC_CONFIG.SAVE_DEBOUNCE_MS,
+      isInFlight: (storeName, id) => inFlight.has(flightKey(storeName, id)),
+    });
+    sales.init();
 
     const today = todayLocal();
     ['#milk-date', '#calf-date'].forEach((sel) => {

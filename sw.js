@@ -6,7 +6,7 @@
  *
  * Strategy
  *   • INSTALL: download and cache every file the app needs (the "app shell"):
- *     index.html, herd.js, app.js, manifest.json, the two icons, the
+ *     index.html, herd.js, sales.js, app.js, manifest.json, the two icons, the
  *     Tailwind CDN script and the Dexie CDN script.
  *     If any file fails to download, the install fails and the browser
  *     retries on the next visit, so a half-cached app is never activated.
@@ -20,13 +20,13 @@
  *   • UPDATE: a new sw.js waits until app.js sends SKIP_WAITING (the user
  *     taps "Reload" on the update banner), so nobody loses a half-typed entry.
  *
- * ►► Whenever you change ANY app file (index.html, herd.js, app.js, a CDN URL),
+ * ►► Whenever you change ANY app file (index.html, herd.js, sales.js, app.js, a CDN URL),
  *    bump CACHE_VERSION below. That is what tells phones to update.
  * ===================================================================== */
 
 'use strict';
 
-const CACHE_VERSION = 'v4.0.0'; // v4.0.0: herd register (herd.js) · v3.0.0: Google Sign-In
+const CACHE_VERSION = 'v5.0.0'; // v5.0.0: sales (sales.js) · v4.0.0: herd register (herd.js) · v3.0.0: Google Sign-In
 const CACHE_PREFIX = 'mawe-tatu-';
 const SHELL_CACHE = `${CACHE_PREFIX}shell-${CACHE_VERSION}`;
 
@@ -40,6 +40,7 @@ const INDEX_URL = new URL('./index.html', SCOPE).href;
 const LOCAL_ASSETS = [
   INDEX_URL,
   new URL('./herd.js', SCOPE).href,
+  new URL('./sales.js', SCOPE).href,
   new URL('./app.js', SCOPE).href,
   new URL('./manifest.json', SCOPE).href,
   new URL('./icon-192.png', SCOPE).href,
@@ -136,7 +137,7 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // 2. Pre-cached files (herd.js, app.js, Tailwind, Dexie): cache first.
+  // 2. Pre-cached files (herd.js, sales.js, app.js, Tailwind, Dexie): cache first.
   //    Compare without the query string so app.js?x=1 still matches.
   const bareUrl = url.origin + url.pathname;
   if (PRECACHE_URLS.has(request.url) || PRECACHE_URLS.has(bareUrl)) {
