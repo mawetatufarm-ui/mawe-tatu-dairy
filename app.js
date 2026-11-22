@@ -96,10 +96,12 @@
   // v5.5 (fodder.js): silage / hay batches and feed-out.
   const FODDER_BATCHES = 'fodder_batches';
   const FODDER_FEEDOUT = 'fodder_feedout';
+  // v5.6 (breeding.js): heats, services, pregnancy checks, dry-off, calvings.
+  const BREEDING = 'breeding_events';
 
   // Append-only stores, in upload order: prices before sales, sales before the
   // payments and returns that refer to them.
-  const APPEND_STORES = Object.freeze([SALES.PRICES, STORES.MILK, STORES.CALF, SALES.SALES, SALES.PAYMENTS, SALES.RETURNS, EXPENSES, EXPENSE_PAYMENTS, FEED_BATCHES, FODDER_BATCHES, FODDER_FEEDOUT]);
+  const APPEND_STORES = Object.freeze([SALES.PRICES, STORES.MILK, STORES.CALF, SALES.SALES, SALES.PAYMENTS, SALES.RETURNS, EXPENSES, EXPENSE_PAYMENTS, FEED_BATCHES, FODDER_BATCHES, FODDER_FEEDOUT, BREEDING]);
   // Synced rows of these are removed from the phone after 30 days (prices are
   // kept: the sheet's list replaces them on every download).
   const PRUNE_STORES = Object.freeze([STORES.MILK, STORES.CALF, SALES.SALES, SALES.PAYMENTS, SALES.RETURNS, EXPENSES, EXPENSE_PAYMENTS, FEED_BATCHES, EXPENSE_EDITS, FODDER_FEEDOUT]);
@@ -125,6 +127,7 @@
     [EXPENSE_PAYMENTS]: 'Expense_Payments',
     [FODDER_BATCHES]: 'Fodder_Batches',
     [FODDER_FEEDOUT]: 'Fodder_Feedout',
+    [BREEDING]: 'Breeding_Events',
   });
 
   // Exactly which fields are sent to the server for each store.
@@ -140,6 +143,7 @@
     ...((window.MaweExpenses && window.MaweExpenses.PAYLOAD) || {}),
     ...((window.MaweExpenseList && window.MaweExpenseList.PAYLOAD) || {}),
     ...((window.MaweFodder && window.MaweFodder.PAYLOAD) || {}),
+    ...((window.MaweBreeding && window.MaweBreeding.PAYLOAD) || {}),
   });
 
   // The three daily milkings at Mawe Tatu: ~5:00 am, ~1:00 pm, ~8:30 pm.
@@ -175,7 +179,7 @@
    *   herd, status, category  list filters and dropdowns
    *   damId                   offspring lookups
    * Existing milk and calf rows are untouched by the upgrades. Never edit
-   * an old version block; add db.version(8) for the next schema change.
+   * an old version block; add db.version(9) for the next schema change.
    * ------------------------------------------------------------------ */
 
   const db = new Dexie(DB_NAME);
@@ -227,6 +231,12 @@
     [FODDER_FEEDOUT]: '++id, &clientId, syncStatus, date, batchId, createdAt',
   });
 
+  /* Version 8 (breeding and calving — breeding.js). Never pruned: a few dozen
+   * events a year, and the breeding view needs the whole history. */
+  db.version(8).stores({
+    [BREEDING]: '++id, &clientId, syncStatus, date, animalId, eventId, createdAt',
+  });
+
   /** The herd register module (herd.js). Created in init() once the DB is open. */
   let herd = null;
   /** The sales module (sales.js). Created in init(). */
@@ -237,6 +247,8 @@
   let expenses = null;
   /** The fodder module (fodder.js). Created in init(). */
   let fodder = null;
+  /** The breeding module (breeding.js). Created in init(), after herd and expenses. */
+  let breeding = null;
 
   /* ------------------------------------------------------------------
    * 4. UTILITY HELPERS
@@ -1240,6 +1252,7 @@
             // without listFeedPrices just means the batch form uses this phone's prices.
             if (expenses) await expenses.refreshPrices(false);
             if (fodder) await fodder.refresh(false);
+            if (breeding) await breeding.refresh(false);
           }
           return totals;
         });
@@ -1577,6 +1590,7 @@
         if (storeName === EXPENSES && expenses) await expenses.applyRename(storeName, rec, res.renamed);
         else if (storeName === EXPENSE_PAYMENTS && expenses) await expenses.applyPaymentRename(rec, res.renamed);
         else if (storeName === FODDER_BATCHES && fodder) await fodder.applyRename(storeName, rec, res.renamed);
+        else if (storeName === BREEDING && breeding) await breeding.applyRename(storeName, rec, res.renamed);
         else if (sales) await sales.applyRename(storeName, rec, res.renamed);
       }
     }
@@ -1720,6 +1734,7 @@
    *   await FarmDB.getPending('milk_logs')   ·   FarmDB.syncNow()
    * ------------------------------------------------------------------ */
   window.FarmDB = Object.freeze({
+    get breeding() { return breeding; },
     db, STORES, SYNC_STATUS, SHEET_FOR_STORE, MILK_SESSIONS, FEED_TYPES,
     addMilkLog, addCalfLog, getPending, countPending,
     markSynced, markFailed, deleteUnsynced,
@@ -1829,6 +1844,18 @@
       fodder.init();
     } else {
       console.warn('fodder.js did not load: the Fodder tab is unavailable.');
+    }
+
+    // Breeding view in the Herd tab (breeding.js): uses herd.js to update cows and add calves,
+    // and expenses.js numbering for the AI cost.
+    if (window.MaweBreeding && herd) {
+      breeding = window.MaweBreeding.create({
+        db, SYNC_STATUS, getSession: () => session, getDeviceId, makeUUID, todayLocal, esc, toast, requestSync,
+        saveDebounceMs: SYNC_CONFIG.SAVE_DEBOUNCE_MS, callServer, herd, expenses,
+      });
+      breeding.init();
+    } else {
+      console.warn('breeding.js did not load: the Breeding view is unavailable.');
     }
 
     // Reports tab (reports.js): customer sales, milk output and expenses for chosen dates.

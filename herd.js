@@ -224,6 +224,31 @@
       });
     }
 
+    /**
+     * For other modules (breeding.js): change some fields of an animal, with
+     * the same checks as the Herd form. Warnings (e.g. inbreeding) do not
+     * stop the save; errors do. Returns the saved record.
+     */
+    async function updateAnimal(id, patch) {
+      const existing = byId.get(id) || await table().get(id);
+      if (!existing) throw new Error(`${id} is not in the herd list on this phone.`);
+      const result = validateAnimal({ ...existing, ...patch, herd: existing.herd }, { originalId: id, isNew: false });
+      if (!result.ok) throw new Error(result.errors[0]);
+      const saved = await saveAnimal(result.data, { originalId: id, isNew: false });
+      requestSync('herd-save', saveDebounceMs);
+      return saved;
+    }
+
+    /** For breeding.js: add a calf born on the farm (next MT- number). Returns the saved record. */
+    async function addAnimal(data) {
+      const animalId = nextId(HERD.FARM);
+      const result = validateAnimal({ herd: HERD.FARM, status: 'Active', source: 'Born on farm', ...data, animalId }, { isNew: true });
+      if (!result.ok) throw new Error(result.errors[0]);
+      const saved = await saveAnimal(result.data, { isNew: true });
+      requestSync('herd-save', saveDebounceMs);
+      return saved;
+    }
+
     /** Delete an animal that never reached the sheet (a mistaken entry).
      *  Uploaded animals are never deleted: mark them Sold / Dead instead. */
     async function deleteUnsyncedAnimal(id) {
@@ -951,6 +976,9 @@
       STORE,
       init,
       getAnimal,
+      listAnimals: () => animals.slice(),
+      updateAnimal,
+      addAnimal,
       isEmpty: () => animals.length === 0,
       isEditing: () => !!editing,
       nextMilkingCow,

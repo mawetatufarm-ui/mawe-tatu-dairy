@@ -300,6 +300,11 @@
     <!-- Driven by herd.js. Two views: the list (#herd-list-view) and the
          add / edit form (#herd-form); only one is visible at a time. -->
     <section id="panel-herd" role="tabpanel" aria-labelledby="tab-herd" class="hidden panel-enter">
+      <div class="grid grid-cols-2 gap-2 mb-4" role="group" aria-label="Herd view">
+        <button type="button" class="herd-view-btn rounded-xl py-2.5 text-sm font-bold shadow-sm bg-sky-700 text-white" data-view="animals" aria-pressed="true">Animals</button>
+        <button type="button" class="herd-view-btn rounded-xl py-2.5 text-sm font-bold shadow-sm bg-white text-sky-800" data-view="breeding" aria-pressed="false">Breeding</button>
+      </div>
+      <div id="herd-animals">
 
       <!-- ---------- List view ---------- -->
       <div id="herd-list-view">
@@ -472,6 +477,77 @@
           <button id="herd-delete" type="button" class="hidden text-sm font-semibold text-red-600">Delete (not uploaded yet)</button>
         </div>
       </form>
+          </div>
+
+      <!-- ---------- Breeding (breeding.js) ---------- -->
+      <div id="breed-view" class="hidden space-y-4">
+        <div id="brd-main" class="space-y-4">
+          <div class="flex items-center justify-between gap-2">
+            <p id="brd-summary" class="text-xs text-slate-600"></p>
+            <button type="button" id="brd-refresh" class="text-xs font-semibold text-sky-700 underline shrink-0">Update</button>
+          </div>
+          <button id="brd-add" type="button" class="w-full rounded-xl bg-sky-700 hover:bg-sky-800 text-white font-bold py-3 shadow">+ Record heat, service, check or calving</button>
+          <div>
+            <h3 class="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-2 px-1">Due in the next 3 weeks</h3>
+            <ul id="brd-due" class="space-y-2"></ul>
+          </div>
+          <div id="brd-ai-wrap" class="hidden">
+            <h3 class="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-2 px-1">AI paid for, service not recorded</h3>
+            <ul id="brd-ai" class="space-y-2"></ul>
+          </div>
+          <div>
+            <h3 class="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-2 px-1">Cows and heifers</h3>
+            <ul id="brd-cows" class="space-y-2"></ul>
+          </div>
+        </div>
+
+        <form id="brd-form" class="hidden bg-white rounded-2xl shadow-sm p-5 space-y-4" novalidate autocomplete="off">
+          <div class="flex items-center justify-between gap-2">
+            <button id="brd-cancel" type="button" class="text-sm font-semibold text-sky-700">‹ Breeding</button>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div><label for="brd-type" class="hf-label">Event</label>
+              <select id="brd-type" class="hf-input"><option>Heat</option><option selected>Service</option><option>Pregnancy check</option><option>Dry-off</option><option>Calving</option><option>Abortion / loss</option></select></div>
+            <div><label for="brd-date" class="hf-label">Date</label><input id="brd-date" type="date" class="hf-input" /></div>
+          </div>
+          <div><label for="brd-cow" class="hf-label">Cow or heifer</label><select id="brd-cow" class="hf-input"></select></div>
+
+          <div id="brd-service" class="space-y-3 rounded-xl bg-sky-50/60 p-3">
+            <div class="grid grid-cols-2 gap-3">
+              <div><label for="brd-method" class="hf-label">How</label><select id="brd-method" class="hf-input"><option>AI</option><option>Bull</option></select></div>
+              <div id="brd-semen-wrap"><label for="brd-semen" class="hf-label">Semen</label><select id="brd-semen" class="hf-input"><option value="">Not recorded</option><option>Conventional</option><option>Sexed</option></select></div>
+            </div>
+            <div><label for="brd-sire" class="hf-label">Bull</label><select id="brd-sire" class="hf-input"></select></div>
+            <div id="brd-sirecode-wrap"><label for="brd-sirecode" class="hf-label">Bull name or semen code</label><input id="brd-sirecode" type="text" maxlength="60" class="hf-input" placeholder="e.g. 7HO12345 or neighbour's bull" /></div>
+            <div id="brd-cost-wrap" class="grid grid-cols-2 gap-3">
+              <div><label for="brd-cost" class="hf-label">Cost (KES, optional)</label><input id="brd-cost" type="number" min="0" step="1" inputmode="decimal" class="hf-input" /></div>
+              <div><label for="brd-costmethod" class="hf-label">Paid by</label><select id="brd-costmethod" class="hf-input"><option>Cash</option><option>M-Pesa</option><option>Bank</option><option>Other</option></select></div>
+              <p class="col-span-2 -mt-2 text-xs text-slate-500">A cost is saved in Expenses (Breeding → AI service &amp; semen) for this cow.</p>
+            </div>
+            <p id="brd-linked" class="hidden text-xs text-sky-800">Linked to the AI cost already recorded in Expenses.</p>
+          </div>
+          <div id="brd-tech-wrap"><label id="brd-tech-label" for="brd-tech" class="hf-label">Inseminator</label><input id="brd-tech" type="text" maxlength="60" class="hf-input" /></div>
+          <div id="brd-pd" class="hidden"><label for="brd-result" class="hf-label">Result</label>
+            <select id="brd-result" class="hf-input"><option>Pregnant</option><option>Not pregnant</option><option>Not sure</option></select></div>
+          <div id="brd-calving" class="hidden space-y-3 rounded-xl bg-farm-50/60 p-3">
+            <div class="grid grid-cols-2 gap-3">
+              <div><label for="brd-ease" class="hf-label">Calving</label><select id="brd-ease" class="hf-input"><option>Normal</option><option>Assisted</option><option>Vet needed</option></select></div>
+              <div><label for="brd-outcome" class="hf-label">Calf</label><select id="brd-outcome" class="hf-input"><option>Alive</option><option>Stillborn</option></select></div>
+              <div><label for="brd-calfsex" class="hf-label">Sex</label><select id="brd-calfsex" class="hf-input"><option value="">—</option><option>Female</option><option>Male</option></select></div>
+              <div><label for="brd-calfweight" class="hf-label">Weight (kg, optional)</label><input id="brd-calfweight" type="number" min="5" max="80" step="0.5" inputmode="decimal" class="hf-input" /></div>
+            </div>
+            <div id="brd-calf-wrap" class="space-y-2">
+              <div><label for="brd-calfexisting" class="hf-label">The calf</label>
+                <select id="brd-calfexisting" class="hf-input"><option value="">New calf: add it to the herd list</option></select></div>
+              <div id="brd-calfname-wrap"><label for="brd-calfname" class="hf-label">Calf's name</label><input id="brd-calfname" type="text" maxlength="40" class="hf-input" /></div>
+            </div>
+          </div>
+          <input id="brd-notes" type="text" maxlength="300" class="hf-input" placeholder="Notes (optional, e.g. heat signs)" aria-label="Notes" />
+          <p id="brd-effect" class="text-xs text-sky-900 bg-sky-50 rounded-lg px-3 py-2 empty:hidden"></p>
+          <p id="brd-error" class="hidden text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2" role="alert"></p>
+          <button type="submit" class="w-full rounded-xl bg-sky-700 hover:bg-sky-800 active:scale-[.98] text-white font-bold py-3.5 text-base shadow transition">Save</button>
+        </form>
+      </div>
     </section>
 
     <!-- ===================== PANEL 4: SALES ===================== -->
@@ -1193,6 +1269,7 @@
   <script src="expenses.js" defer></script>
   <script src="expense-list.js" defer></script>
   <script src="fodder.js" defer></script>
+  <script src="breeding.js" defer></script>
   <script src="reports.js" defer></script>
   <script src="app.js" defer></script>
 </body>
