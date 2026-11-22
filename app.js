@@ -2,9 +2,10 @@
  * Mawe Tatu Dairy — app.js
  * Local-first storage (Dexie) + Google Sign-In + sync engine + service worker
  * ---------------------------------------------------------------------
- * Loaded by index.html with <script src="app.js" defer>, AFTER herd.js and sales.js.
+ * Loaded by index.html with <script src="app.js" defer>, AFTER herd.js, sales.js and reports.js.
  * Depends on: the global `Dexie` (dexie.js CDN), window.MaweHerd (herd.js,
- * the herd register), window.MaweSales (sales.js, the Sales tab) and, when
+ * the herd register), window.MaweSales (sales.js, the Sales tab),
+ * window.MaweReports (reports.js, the Reports tab) and, when
  * online, the Google Identity Services script (#gis-script in index.html).
  * Works with: sw.js (offline app shell) and Code.gs (Apps Script backend).
  *
@@ -16,7 +17,7 @@
  *   5. Data-access layer
  *   6. Validation
  *   7. Form submit handlers
- *   8. Tab navigation (Milk / Calf Feed / Herd / Sales)
+ *   8. Tab navigation (Milk / Calf Feed / Herd / Sales / Reports)
  *   9. Status UI: sync badge, header detail, recent lists
  *  10. Authentication (Google Sign-In, offline session, logout)
  *  11. Sync engine  (IndexedDB <-> Apps Script <-> Google Sheets;
@@ -181,6 +182,8 @@
   let herd = null;
   /** The sales module (sales.js). Created in init(). */
   let sales = null;
+  /** The reports module (reports.js). Created in init(). */
+  let reports = null;
 
   /* ------------------------------------------------------------------
    * 4. UTILITY HELPERS
@@ -509,6 +512,7 @@
     calf: { active: ['bg-calf-600', 'text-white', 'shadow'], idle: ['text-slate-600', 'hover:bg-slate-100'] },
     herd: { active: ['bg-sky-700', 'text-white', 'shadow'], idle: ['text-slate-600', 'hover:bg-slate-100'] },
     sales: { active: ['bg-violet-700', 'text-white', 'shadow'], idle: ['text-slate-600', 'hover:bg-slate-100'] },
+    reports: { active: ['bg-teal-700', 'text-white', 'shadow'], idle: ['text-slate-600', 'hover:bg-slate-100'] },
   };
 
   function activateTab(name) {
@@ -1654,6 +1658,7 @@
     currentUser: () => (session ? { email: session.email, name: session.name } : null),
     get herd() { return herd; },   // e.g. FarmDB.herd.getAnimal('MT-001')
     get sales() { return sales; }, // e.g. FarmDB.sales.balanceOf('C-001')
+    get reports() { return reports; },
   });
 
   /* ------------------------------------------------------------------
@@ -1722,6 +1727,22 @@
       isInFlight: (storeName, id) => inFlight.has(flightKey(storeName, id)),
     });
     sales.init();
+
+    // Reports tab (reports.js): customer sales and milk output for chosen dates.
+    if (window.MaweReports) {
+      reports = window.MaweReports.create({
+        db,
+        callServer,                                  // POST an action with the sign-in token (section 11)
+        requestSignIn: () => showAuthScreen('reauth'),
+        getSession: () => session,
+        todayLocal,
+        esc,
+        toast,
+      });
+      reports.init();
+    } else {
+      console.warn('reports.js did not load: the Reports tab is unavailable.');
+    }
 
     const today = todayLocal();
     ['#milk-date', '#calf-date'].forEach((sel) => {
