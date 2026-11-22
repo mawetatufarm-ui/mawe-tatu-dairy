@@ -7,7 +7,10 @@
  * farm's own packing density.
  *
  * Three views (buttons at the top):
- *   FEED-OUT  — daily: which batch, how many sacks / wheelbarrows / bags,
+ *   FEED-OUT  — each time silage leaves the pile / bags: for the maize pile
+ *               that is each container fill (about every 2 weeks); for
+ *               Napier the bags opened. Which batch, how many containers /
+ *               sacks / bags,
  *               the weight of one (weighed once, remembered per batch and
  *               unit), kg thrown away, "this finishes the batch".
  *   BATCHES   — every batch with estimate, fed so far, left, kg per day,
@@ -36,7 +39,7 @@
   const FEED_STORE = 'fodder_feedout';
   const TYPES = ['Maize silage (ground pile)', 'Napier silage (bags)', 'Hay (bales)', 'Other silage (pile)', 'Other silage (bags)'];
   const PILE_TYPES = ['Maize silage (ground pile)', 'Other silage (pile)'];
-  const UNITS = ['sacks', 'wheelbarrows', 'bags', 'bales', 'loads', 'kg'];
+  const UNITS = ['containers', 'sacks', 'wheelbarrows', 'bags', 'bales', 'loads', 'kg'];
   const DEFAULT_DENSITY = 450;
   const PAYLOAD = Object.freeze({
     [BATCH_STORE]: ['clientId', 'deviceId', 'batchId', 'date', 'type', 'name', 'plot', 'acres', 'method', 'shape', 'lengthM', 'baseWidthM', 'topWidthM', 'heightM',
@@ -159,7 +162,7 @@
     /** Weight of one sack / bag for this batch: remembered, or the batch's average bag weight. */
     function prefillUnit() {
       const b = allBatches().find((x) => x.batchId === $('#fo-batch').value);
-      if (b && !$('#fo-unit').dataset.touched) $('#fo-unit').value = /bags/.test(b.type) ? 'bags' : /bales/.test(b.type) ? 'bales' : 'sacks';
+      if (b && !$('#fo-unit').dataset.touched) $('#fo-unit').value = /bags/.test(b.type) ? 'bags' : /bales/.test(b.type) ? 'bales' : 'containers';
       const unit = $('#fo-unit').value;
       const key = (b ? b.batchId : '') + '|' + unit;
       const el = $('#fo-kgper');
@@ -180,7 +183,7 @@
         t += `${t ? ' · ' : ''}batch: ${tonnes(b.fedKg)} fed of ~${tonnes(b.estimatedKg)}${b.kgPerDay ? `, ${kgs(b.kgPerDay)}/day, ~${b.daysLeft} days left` : ''}`;
       }
       $('#fo-kg').textContent = t;
-      $('#fo-kgper-hint').textContent = per > 0 ? '' : 'Weigh one full sack / barrow once on the hanging scale; it is remembered.';
+      $('#fo-kgper-hint').textContent = per > 0 ? '' : 'Weigh one full container / sack once on the hanging scale; it is remembered.';
     }
 
     async function handleFeed(e) {
@@ -254,7 +257,7 @@
           <p>Estimated <b>${tonnes(est)}</b>${b.method === 'Measure pile' ? ` (${b.volumeM3 ?? r2(volume(b.shape, b.lengthM, b.baseWidthM, b.topWidthM, b.heightM) || 0)} m³ × ${b.density} kg/m³)` : b.units ? ` (${b.units} ${esc(b.unitName)} × ${b.avgUnitKg} kg)` : ''}${b.tonnesPerAcre ? ` · ${b.tonnesPerAcre} t/acre` : ''}</p>
           ${b.cost !== null && b.cost !== undefined ? `<p>Cost ${money(b.cost)}${b.costPerTonne ? ` · <b>${money(b.costPerTonne)}</b> per tonne · ${money(b.costPerKg)} per kg` : ''}</p>` : ''}
           <div class="h-2 bg-slate-100 rounded-full overflow-hidden" aria-label="${used}% used"><div class="h-2 bg-lime-600" style="width:${used}%"></div></div>
-          <p>Fed ${tonnes(b.fedKg)}${b.spoiledKg ? ` · thrown away ${kgs(b.spoiledKg)}` : ''}${!b.finished ? ` · ~${tonnes(b.remainingKg)} left` : ''}${b.kgPerDay ? ` · ${kgs(b.kgPerDay)} a day` : ''}${b.pendingFeeds ? ` · ${b.pendingFeeds} feed-out(s) not uploaded` : ''}</p>
+          <p>Fed ${tonnes(b.fedKg)}${b.spoiledKg ? ` · thrown away ${kgs(b.spoiledKg)}` : ''}${!b.finished ? ` · ~${tonnes(b.remainingKg)} left` : ''}${b.kgPerDay ? ` · ${kgs(b.kgPerDay)} a day` : ''}${b.onHandDays ? ` · ~${b.onHandDays} days in containers` : ''}${b.pendingFeeds ? ` · ${b.pendingFeeds} feed-out(s) not uploaded` : ''}</p>
           ${actual}
         </li>`;
       }).join('') : '<li class="text-sm text-slate-400 px-1">No batches yet. Add your current silage under New batch.</li>';
