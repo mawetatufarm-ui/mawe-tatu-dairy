@@ -5,7 +5,8 @@
  * Loaded by index.html with <script src="app.js" defer>, AFTER herd.js, sales.js and reports.js.
  * Depends on: the global `Dexie` (dexie.js CDN), window.MaweHerd (herd.js,
  * the herd register), window.MaweSales (sales.js, the Sales tab),
- * window.MaweReports (reports.js, the Reports tab) and, when
+ * window.MaweReports (reports.js, the Reports tab), window.MaweExpenses
+ * (expenses.js, the Expenses tab) and, when
  * online, the Google Identity Services script (#gis-script in index.html).
  * Works with: sw.js (offline app shell) and Code.gs (Apps Script backend).
  *
@@ -17,7 +18,7 @@
  *   5. Data-access layer
  *   6. Validation
  *   7. Form submit handlers
- *   8. Tab navigation (Milk / Calf Feed / Herd / Sales / Reports)
+ *   8. Tab navigation (Milk / Calf Feed / Herd / Sales / Expenses / Reports)
  *   9. Status UI: sync badge, header detail, recent lists
  *  10. Authentication (Google Sign-In, offline session, logout)
  *  11. Sync engine  (IndexedDB <-> Apps Script <-> Google Sheets;
@@ -84,12 +85,21 @@
     CUSTOMERS: 'customers', PRICES: 'prices', SALES: 'sales', PAYMENTS: 'payments', RETURNS: 'returns', KV: 'kv',
   });
 
+  // Dairy expenses and feed batch costing (managed by expenses.js).
+  const EXPENSES = 'expenses';
+  const FEED_BATCHES = 'feed_batches';
+  // v5.4 (expense-list.js): later payments on credit purchases (append),
+  // corrections / cancellations and receipt photos (uploaded by expenses.syncExtras()).
+  const EXPENSE_PAYMENTS = 'expense_payments';
+  const EXPENSE_EDITS = 'expense_edits';
+  const RECEIPTS = 'receipts';
+
   // Append-only stores, in upload order: prices before sales, sales before the
   // payments and returns that refer to them.
-  const APPEND_STORES = Object.freeze([SALES.PRICES, STORES.MILK, STORES.CALF, SALES.SALES, SALES.PAYMENTS, SALES.RETURNS]);
+  const APPEND_STORES = Object.freeze([SALES.PRICES, STORES.MILK, STORES.CALF, SALES.SALES, SALES.PAYMENTS, SALES.RETURNS, EXPENSES, EXPENSE_PAYMENTS, FEED_BATCHES]);
   // Synced rows of these are removed from the phone after 30 days (prices are
   // kept: the sheet's list replaces them on every download).
-  const PRUNE_STORES = Object.freeze([STORES.MILK, STORES.CALF, SALES.SALES, SALES.PAYMENTS, SALES.RETURNS]);
+  const PRUNE_STORES = Object.freeze([STORES.MILK, STORES.CALF, SALES.SALES, SALES.PAYMENTS, SALES.RETURNS, EXPENSES, EXPENSE_PAYMENTS, FEED_BATCHES, EXPENSE_EDITS]);
 
   // pending -> (upload) -> synced
   // pending -> (server rejected the record) -> failed -> retried each run
@@ -107,6 +117,9 @@
     [SALES.SALES]: 'Sales',
     [SALES.PAYMENTS]: 'Payments',
     [SALES.RETURNS]: 'Returns',
+    [EXPENSES]: 'Expenses',
+    [FEED_BATCHES]: 'Feed_Batches',
+    [EXPENSE_PAYMENTS]: 'Expense_Payments',
   });
 
   // Exactly which fields are sent to the server for each store.
@@ -118,6 +131,9 @@
     [STORES.CALF]: ['clientId', 'deviceId', 'date', 'calfId', 'calfName', 'feedType', 'quantityKg', 'recordedBy', 'createdAt'],
     // Sales stores: the field lists live in sales.js (MaweSales.PAYLOAD).
     ...((window.MaweSales && window.MaweSales.PAYLOAD) || {}),
+    // Expenses and feed batches: the field lists live in expenses.js (MaweExpenses.PAYLOAD).
+    ...((window.MaweExpenses && window.MaweExpenses.PAYLOAD) || {}),
+    ...((window.MaweExpenseList && window.MaweExpenseList.PAYLOAD) || {}),
   });
 
   // The three daily milkings at Mawe Tatu: ~5:00 am, ~1:00 pm, ~8:30 pm.
@@ -153,7 +169,7 @@
    *   herd, status, category  list filters and dropdowns
    *   damId                   offspring lookups
    * Existing milk and calf rows are untouched by the upgrades. Never edit
-   * an old version block; add db.version(4) for the next schema change.
+   * an old version block; add db.version(7) for the next schema change.
    * ------------------------------------------------------------------ */
 
   const db = new Dexie(DB_NAME);
@@ -178,12 +194,33 @@
     [SALES.KV]: 'key',
   });
 
+  /* Version 4 (expenses) adds the expenses store. */
+  db.version(4).stores({
+    [EXPENSES]: '++id, &clientId, syncStatus, date, category, expenseId, createdAt',
+  });
+
+  /* Version 5 (feed batch costing) adds feed_batches: one row per batch line
+   * (ingredient, grinding, labour, transport, other), lines of one batch
+   * share batchId. Uploaded to the Feed_Batches tab. */
+  db.version(5).stores({
+    [FEED_BATCHES]: '++id, &clientId, syncStatus, date, batchId, createdAt',
+  });
+
+  /* Version 6 (credit purchases, corrections, receipts — expense-list.js). */
+  db.version(6).stores({
+    [EXPENSE_PAYMENTS]: '++id, &clientId, syncStatus, date, expenseId, paymentId, createdAt',
+    [EXPENSE_EDITS]: '++id, &clientId, syncStatus, expenseId, createdAt',
+    [RECEIPTS]: '++id, &clientId, syncStatus, expenseId, createdAt',
+  });
+
   /** The herd register module (herd.js). Created in init() once the DB is open. */
   let herd = null;
   /** The sales module (sales.js). Created in init(). */
   let sales = null;
   /** The reports module (reports.js). Created in init(). */
   let reports = null;
+  /** The expenses module (expenses.js). Created in init(). */
+  let expenses = null;
 
   /* ------------------------------------------------------------------
    * 4. UTILITY HELPERS
@@ -321,7 +358,8 @@
     const statuses = [SYNC_STATUS.PENDING, SYNC_STATUS.FAILED];
     const counts = await Promise.all([ANIMALS, SALES.CUSTOMERS].concat(APPEND_STORES)
       .map((name) => db[name].where('syncStatus').anyOf(statuses).count()));
-    return counts.reduce((t, n) => t + n, 0);
+    const extras = expenses ? await expenses.countPendingExtras() : 0; // corrections + receipts
+    return counts.reduce((t, n) => t + n, 0) + extras;
   }
 
   /** Mark rows as uploaded — called ONLY after the server confirmed them. */
@@ -513,6 +551,7 @@
     herd: { active: ['bg-sky-700', 'text-white', 'shadow'], idle: ['text-slate-600', 'hover:bg-slate-100'] },
     sales: { active: ['bg-violet-700', 'text-white', 'shadow'], idle: ['text-slate-600', 'hover:bg-slate-100'] },
     reports: { active: ['bg-teal-700', 'text-white', 'shadow'], idle: ['text-slate-600', 'hover:bg-slate-100'] },
+    expenses: { active: ['bg-rose-700', 'text-white', 'shadow'], idle: ['text-slate-600', 'hover:bg-slate-100'] },
   };
 
   function activateTab(name) {
@@ -1180,6 +1219,9 @@
           if (pullDue || totals.stale > 0) {
             totals.pulled = await pullAnimals();
             await pullSales();
+            // Feed prices for batch costing. Not essential: an older Apps Script
+            // without listFeedPrices just means the batch form uses this phone's prices.
+            if (expenses) await expenses.refreshPrices(false);
           }
           return totals;
         });
@@ -1252,6 +1294,12 @@
       const { uploaded, rejected } = await syncStore(storeName);
       totals.uploaded += uploaded;
       totals.rejected += rejected;
+    }
+    // 3. Expense corrections and receipt photos (their expenses are in the sheet by now).
+    if (expenses) {
+      const x = await expenses.syncExtras();
+      totals.uploaded += x.uploaded;
+      totals.rejected += x.rejected;
     }
     return totals;
   }
@@ -1507,8 +1555,10 @@
     // The sheet already had this Sale / Payment / Return ID: take the one it gave.
     for (const rec of records) {
       const res = byClientId.get(rec.clientId);
-      if (res && res.renamed && sales && (res.status === 'saved' || res.status === 'duplicate')) {
-        await sales.applyRename(storeName, rec, res.renamed);
+      if (res && res.renamed && (res.status === 'saved' || res.status === 'duplicate')) {
+        if (storeName === EXPENSES && expenses) await expenses.applyRename(storeName, rec, res.renamed);
+        else if (storeName === EXPENSE_PAYMENTS && expenses) await expenses.applyPaymentRename(rec, res.renamed);
+        else if (sales) await sales.applyRename(storeName, rec, res.renamed);
       }
     }
 
@@ -1659,6 +1709,7 @@
     get herd() { return herd; },   // e.g. FarmDB.herd.getAnimal('MT-001')
     get sales() { return sales; }, // e.g. FarmDB.sales.balanceOf('C-001')
     get reports() { return reports; },
+    get expenses() { return expenses; },
   });
 
   /* ------------------------------------------------------------------
@@ -1728,7 +1779,29 @@
     });
     sales.init();
 
-    // Reports tab (reports.js): customer sales and milk output for chosen dates.
+    // Expenses tab (expenses.js).
+    if (window.MaweExpenses) {
+      expenses = window.MaweExpenses.create({
+        db,
+        SYNC_STATUS,
+        getSession: () => session,
+        getDeviceId,
+        makeUUID,
+        todayLocal,
+        esc,
+        toast,
+        requestSync,
+        saveDebounceMs: SYNC_CONFIG.SAVE_DEBOUNCE_MS,
+        isInFlight: (storeName, id) => inFlight.has(flightKey(storeName, id)),
+        callServer,                                  // listFeedPrices, listExpenses, updateExpenses, uploadReceipt
+        SyncError,
+      });
+      expenses.init();
+    } else {
+      console.warn('expenses.js did not load: the Expenses tab is unavailable.');
+    }
+
+    // Reports tab (reports.js): customer sales, milk output and expenses for chosen dates.
     if (window.MaweReports) {
       reports = window.MaweReports.create({
         db,

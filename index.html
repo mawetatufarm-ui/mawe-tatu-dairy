@@ -148,31 +148,36 @@
 
     <!-- ===================== TAB TOGGLE ===================== -->
     <!-- Segmented control. app.js swaps the active classes and shows/hides panels. -->
-    <!-- Five sections. app.js swaps the active classes and shows/hides panels. -->
-    <nav class="grid grid-cols-5 gap-1 bg-white p-1 rounded-2xl shadow-sm mb-4" role="tablist" aria-label="Choose a section">
+    <!-- Six sections. app.js swaps the active classes and shows/hides panels. -->
+    <nav class="grid grid-cols-6 gap-0.5 bg-white p-1 rounded-2xl shadow-sm mb-4" role="tablist" aria-label="Choose a section">
       <button id="tab-milk" type="button" role="tab" aria-selected="true" aria-controls="panel-milk"
               data-tab="milk"
-              class="tab-btn flex flex-col items-center justify-center gap-0.5 py-2 rounded-xl text-xs font-semibold transition">
+              class="tab-btn flex flex-col items-center justify-center gap-0.5 py-2 rounded-xl text-[11px] leading-tight font-semibold transition">
         <span aria-hidden="true" class="text-lg leading-none">🥛</span> Milk
       </button>
       <button id="tab-calf" type="button" role="tab" aria-selected="false" aria-controls="panel-calf"
               data-tab="calf"
-              class="tab-btn flex flex-col items-center justify-center gap-0.5 py-2 rounded-xl text-xs font-semibold transition">
+              class="tab-btn flex flex-col items-center justify-center gap-0.5 py-2 rounded-xl text-[11px] leading-tight font-semibold transition">
         <span aria-hidden="true" class="text-lg leading-none">🐮</span> Calf Feed
       </button>
       <button id="tab-herd" type="button" role="tab" aria-selected="false" aria-controls="panel-herd"
               data-tab="herd"
-              class="tab-btn flex flex-col items-center justify-center gap-0.5 py-2 rounded-xl text-xs font-semibold transition">
+              class="tab-btn flex flex-col items-center justify-center gap-0.5 py-2 rounded-xl text-[11px] leading-tight font-semibold transition">
         <span aria-hidden="true" class="text-lg leading-none">📋</span> Herd
       </button>
       <button id="tab-sales" type="button" role="tab" aria-selected="false" aria-controls="panel-sales"
               data-tab="sales"
-              class="tab-btn flex flex-col items-center justify-center gap-0.5 py-2 rounded-xl text-xs font-semibold transition">
+              class="tab-btn flex flex-col items-center justify-center gap-0.5 py-2 rounded-xl text-[11px] leading-tight font-semibold transition">
         <span aria-hidden="true" class="text-lg leading-none">💰</span> Sales
+      </button>
+      <button id="tab-expenses" type="button" role="tab" aria-selected="false" aria-controls="panel-expenses"
+              data-tab="expenses"
+              class="tab-btn flex flex-col items-center justify-center gap-0.5 py-2 rounded-xl text-[11px] leading-tight font-semibold transition">
+        <span aria-hidden="true" class="text-lg leading-none">🧾</span> Expenses
       </button>
       <button id="tab-reports" type="button" role="tab" aria-selected="false" aria-controls="panel-reports"
               data-tab="reports"
-              class="tab-btn flex flex-col items-center justify-center gap-0.5 py-2 rounded-xl text-xs font-semibold transition">
+              class="tab-btn flex flex-col items-center justify-center gap-0.5 py-2 rounded-xl text-[11px] leading-tight font-semibold transition">
         <span aria-hidden="true" class="text-lg leading-none">📊</span> Reports
       </button>
     </nav>
@@ -768,17 +773,247 @@
       </div>
     </section>
 
+        <!-- ===================== PANEL 6: EXPENSES ===================== -->
+    <!-- Driven by expenses.js. Works offline; uploads to the Expenses tab. -->
+    <section id="panel-expenses" role="tabpanel" aria-labelledby="tab-expenses" class="hidden panel-enter">
+      <div class="grid grid-cols-3 gap-2 mb-4" role="group" aria-label="Expenses view">
+        <button type="button" class="exp-view-btn rounded-xl py-2.5 text-sm font-bold shadow-sm bg-rose-700 text-white" data-view="expense" aria-pressed="true">Expense</button>
+        <button type="button" class="exp-view-btn rounded-xl py-2.5 text-sm font-bold shadow-sm bg-white text-rose-800" data-view="list" aria-pressed="false">All expenses</button>
+        <button type="button" class="exp-view-btn rounded-xl py-2.5 text-sm font-bold shadow-sm bg-white text-rose-800" data-view="batch" aria-pressed="false">Feed batch</button>
+      </div>
+      <div id="exp-view-expense">
+      <div id="exp-recurring" class="hidden bg-white rounded-2xl shadow-sm p-4 mb-4"></div>
+      <form id="exp-form" class="bg-white rounded-2xl shadow-sm p-5 space-y-4" novalidate autocomplete="off">
+        <h2 class="text-base font-bold text-rose-800">Record an expense</h2>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label for="exp-date" class="hf-label">Date paid</label>
+            <input id="exp-date" type="date" class="hf-input" />
+          </div>
+          <div>
+            <label for="exp-paystatus" class="hf-label">Payment</label>
+            <select id="exp-paystatus" class="hf-input">
+              <option value="Paid">Paid in full</option>
+              <option value="Part paid">Part paid</option>
+              <option value="Unpaid">Not paid yet (credit)</option>
+            </select>
+          </div>
+        </div>
+        <div>
+          <label for="exp-category" class="hf-label">Category</label>
+          <select id="exp-category" class="hf-input"></select>
+          <p id="exp-hint" class="mt-1 text-xs text-rose-900 bg-rose-50 rounded-lg px-3 py-2 empty:hidden"></p>
+        </div>
+        <div>
+          <label id="exp-item-label" for="exp-item" class="hf-label">What was bought (optional)</label>
+          <input id="exp-item" type="text" maxlength="80" list="exp-item-list" class="hf-input" />
+          <datalist id="exp-item-list"></datalist>
+        </div>
+        <div class="grid grid-cols-[1fr_1.5fr_1fr] gap-2">
+          <div>
+            <label id="exp-qty-label" for="exp-qty" class="hf-label">Quantity (optional)</label>
+            <input id="exp-qty" type="number" min="0" step="0.01" inputmode="decimal" class="hf-input" />
+          </div>
+          <div>
+            <label for="exp-unit" class="hf-label">Unit</label>
+            <select id="exp-unit" class="hf-input"></select>
+          </div>
+          <div>
+            <label for="exp-uprice" class="hf-label">Price per unit</label>
+            <input id="exp-uprice" type="number" min="0" step="0.01" inputmode="decimal" class="hf-input" placeholder="KES" />
+          </div>
+        </div>
+        <div>
+          <label for="exp-amount" class="hf-label">Total amount (KES)</label>
+          <input id="exp-amount" type="number" min="1" step="0.01" inputmode="decimal" class="hf-input text-lg font-semibold" />
+          <p class="mt-1 text-xs text-rose-800 empty:hidden" id="exp-unitprice"></p>
+          <p class="mt-1 text-xs text-slate-500 empty:hidden" id="exp-lastprice"></p>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div id="exp-method-wrap">
+            <label for="exp-method" class="hf-label">Paid by</label>
+            <select id="exp-method" class="hf-input"></select>
+          </div>
+          <div id="exp-paidnow-wrap" class="hidden">
+            <label for="exp-paidnow" class="hf-label">Paid now (KES)</label>
+            <input id="exp-paidnow" type="number" min="0" step="0.01" inputmode="decimal" class="hf-input" />
+          </div>
+          <div id="exp-due-wrap" class="hidden">
+            <label for="exp-due" class="hf-label">Due date (optional)</label>
+            <input id="exp-due" type="date" class="hf-input" />
+          </div>
+          <p id="exp-owe" class="col-span-2 -mt-1 text-xs text-red-700 font-semibold empty:hidden"></p>
+        </div>
+        <div id="exp-ref-wrap" class="hidden">
+          <label for="exp-ref" class="hf-label">M-Pesa code / receipt no.</label>
+          <input id="exp-ref" type="text" maxlength="300" class="hf-input uppercase" placeholder="e.g. TK1AB2CD3E" />
+        </div>
+        <div id="exp-charge-wrap" class="hidden">
+          <label for="exp-charge" class="hf-label">Transaction charge (KES, optional)</label>
+          <input id="exp-charge" type="number" min="0" step="1" inputmode="decimal" class="hf-input" placeholder="e.g. 33" />
+          <p class="mt-1 text-xs text-slate-500">Saved as its own "M-Pesa &amp; bank charges" expense.</p>
+        </div>
+        <div>
+          <label for="exp-payee" class="hf-label">Paid to (optional)</label>
+          <input id="exp-payee" type="text" maxlength="80" list="exp-payee-list" class="hf-input" placeholder="e.g. Nangili Agrovet" />
+          <datalist id="exp-payee-list"></datalist>
+        </div>
+        <div id="exp-animal-wrap" class="hidden">
+          <label for="exp-animal" class="hf-label">For which animal? (optional)</label>
+          <select id="exp-animal" class="hf-input"></select>
+        </div>
+        <input id="exp-notes" type="text" maxlength="300" class="hf-input" placeholder="Notes / description (optional)" aria-label="Notes" />
+        <div>
+          <label for="exp-receipt" class="hf-label">Receipt or invoice (optional)</label>
+          <input id="exp-receipt" type="file" accept="image/*,application/pdf" class="block w-full text-sm text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-rose-50 file:text-rose-800 file:font-semibold file:px-3 file:py-2" />
+          <p class="mt-1 text-xs text-slate-500">Take a photo: it is made smaller on the phone and saved in Google Drive.</p>
+        </div>
+        <label class="flex items-center gap-2 text-sm">
+          <input id="exp-repeat" type="checkbox" />
+          <span>Repeat every month (e.g. salary, rent, internet)</span>
+        </label>
+        <p id="exp-error" class="hidden text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2" role="alert"></p>
+        <button type="submit" class="w-full rounded-xl bg-rose-700 hover:bg-rose-800 active:scale-[.98] text-white font-bold py-3.5 text-base shadow transition">
+          Save Expense
+        </button>
+      </form>
+      <p id="exp-month" class="mt-4 text-xs text-slate-500 px-1"></p>
+      <div class="mt-3">
+        <h3 class="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-2 px-1">Recent expenses on this phone</h3>
+        <ul id="exp-recent" class="space-y-2"></ul>
+      </div>
+      </div>
+
+      <!-- All expenses: list, filters, pay, edit, receipts, export (expense-list.js) -->
+      <div id="exp-view-list" class="hidden space-y-3">
+        <form id="exl-filters" class="bg-white rounded-2xl shadow-sm p-4 space-y-3" novalidate autocomplete="off">
+          <div class="flex flex-wrap gap-2">
+            <button type="button" class="exl-quick text-xs font-semibold rounded-full bg-rose-50 text-rose-800 px-3 py-1" data-range="this">This month</button>
+            <button type="button" class="exl-quick text-xs font-semibold rounded-full bg-rose-50 text-rose-800 px-3 py-1" data-range="last">Last month</button>
+            <button type="button" class="exl-quick text-xs font-semibold rounded-full bg-rose-50 text-rose-800 px-3 py-1" data-range="year">This year</button>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div><label for="exl-from" class="hf-label">From</label><input id="exl-from" type="date" class="hf-input" /></div>
+            <div><label for="exl-to" class="hf-label">To</label><input id="exl-to" type="date" class="hf-input" /></div>
+            <div><label for="exl-group" class="hf-label">Group</label><select id="exl-group" class="hf-input"></select></div>
+            <div><label for="exl-category" class="hf-label">Category</label><select id="exl-category" class="hf-input"></select></div>
+            <div><label for="exl-status" class="hf-label">Payment</label><select id="exl-status" class="hf-input">
+              <option value="ALL">All</option><option value="Owing">Still owed</option><option value="Paid">Paid</option><option value="Part paid">Part paid</option><option value="Unpaid">Not paid</option></select></div>
+            <div><label for="exl-animal" class="hf-label">Animal</label><select id="exl-animal" class="hf-input"></select></div>
+            <div><label for="exl-payee" class="hf-label">Supplier</label><input id="exl-payee" type="text" maxlength="80" class="hf-input" placeholder="Any" /></div>
+            <div><label for="exl-q" class="hf-label">Search</label><input id="exl-q" type="search" maxlength="80" class="hf-input" placeholder="Item, code…" /></div>
+          </div>
+          <button id="exl-run" type="submit" class="w-full rounded-xl bg-rose-700 hover:bg-rose-800 text-white font-bold py-3 shadow">Show</button>
+          <div class="grid grid-cols-2 gap-2">
+            <button id="exl-csv" type="button" class="rounded-xl bg-slate-100 text-slate-700 font-semibold py-2 text-sm">⬇ CSV</button>
+            <button id="exl-xlsx" type="button" class="rounded-xl bg-slate-100 text-slate-700 font-semibold py-2 text-sm">⬇ Excel</button>
+          </div>
+        </form>
+        <p id="exl-msg" class="hidden" role="status"></p>
+        <div id="exl-totals"></div>
+        <div id="exl-suppliers"></div>
+        <ul id="exl-list" class="space-y-2"></ul>
+      </div>
+
+      <!-- Feed batch costing (expenses.js) -->
+      <div id="exp-view-batch" class="hidden">
+      <form id="batch-form" class="bg-white rounded-2xl shadow-sm p-5 space-y-4" novalidate autocomplete="off">
+        <div class="flex items-start justify-between gap-3">
+          <h2 class="text-base font-bold text-amber-900">Cost a dairy meal batch</h2>
+          <button type="button" id="batch-refresh" class="text-xs font-semibold text-amber-800 underline shrink-0">Update prices</button>
+        </div>
+        <p class="text-xs text-slate-500 -mt-2">Bought ingredients are priced from your recent purchases; maize from your farm at what it would sell for today. This works out the cost: it does not add an expense.</p>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label for="batch-date" class="hf-label">Date made</label>
+            <input id="batch-date" type="date" class="hf-input" />
+          </div>
+          <div>
+            <label for="batch-product" class="hf-label">Product</label>
+            <input id="batch-product" type="text" maxlength="60" list="batch-product-list" class="hf-input" value="Dairy meal (home mix)" />
+            <datalist id="batch-product-list"></datalist>
+          </div>
+        </div>
+        <div>
+          <h3 class="hf-label">Ingredients</h3>
+          <ul id="batch-ings" class="space-y-2"></ul>
+          <datalist id="batch-ing-list"></datalist>
+          <button type="button" id="batch-add-ing" class="mt-2 w-full rounded-xl border-2 border-dashed border-amber-300 text-amber-800 font-semibold py-2 text-sm">+ Add ingredient</button>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div><label for="batch-grinding" class="hf-label">Grinding / milling (KES)</label>
+            <input id="batch-grinding" type="number" min="0" step="1" inputmode="decimal" class="hf-input" /></div>
+          <div><label for="batch-labour" class="hf-label">Labour (KES)</label>
+            <input id="batch-labour" type="number" min="0" step="1" inputmode="decimal" class="hf-input" /></div>
+          <div><label for="batch-transport" class="hf-label">Transport (KES)</label>
+            <input id="batch-transport" type="number" min="0" step="1" inputmode="decimal" class="hf-input" /></div>
+          <div><label for="batch-other" class="hf-label">Other (KES)</label>
+            <input id="batch-other" type="number" min="0" step="1" inputmode="decimal" class="hf-input" /></div>
+        </div>
+        <div>
+          <label for="batch-output" class="hf-label">Feed made (kg) — blank = total of ingredients</label>
+          <input id="batch-output" type="number" min="0" step="0.1" inputmode="decimal" class="hf-input" />
+        </div>
+        <div id="batch-summary" class="rounded-xl bg-amber-50 p-4 text-sm" aria-live="polite"></div>
+        <label class="flex items-start gap-2 text-sm">
+          <input id="batch-also-exp" type="checkbox" class="mt-1" checked />
+          <span>Also record the grinding, labour, transport and other payments as expenses <span class="text-slate-500">(untick if you have already recorded them)</span></span>
+        </label>
+        <div id="batch-method-wrap">
+          <label for="batch-method" class="hf-label">Those payments were made by</label>
+          <select id="batch-method" class="hf-input"></select>
+        </div>
+        <input id="batch-notes" type="text" maxlength="300" class="hf-input" placeholder="Notes (optional)" aria-label="Batch notes" />
+        <p id="batch-error" class="hidden text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2" role="alert"></p>
+        <button type="submit" class="w-full rounded-xl bg-amber-700 hover:bg-amber-800 active:scale-[.98] text-white font-bold py-3.5 text-base shadow transition">
+          Save Batch
+        </button>
+      </form>
+      <div class="mt-4">
+        <h3 class="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-2 px-1">Recent batches on this phone</h3>
+        <ul id="batch-recent" class="space-y-2"></ul>
+      </div>
+      </div>
+
+      <!-- Pay / correct / cancel sheet (expense-list.js) -->
+      <div id="exl-sheet" class="hidden fixed inset-0 z-50 bg-black/40 flex items-end justify-center" role="dialog" aria-modal="true" aria-labelledby="exl-sheet-title">
+        <form id="exl-sheet-form" class="bg-white w-full max-w-lg rounded-t-2xl p-5 space-y-3 max-h-[90vh] overflow-y-auto" novalidate autocomplete="off">
+          <div class="flex items-center justify-between gap-3">
+            <h2 id="exl-sheet-title" class="text-base font-bold text-rose-800"></h2>
+            <button type="button" id="exl-sheet-close" class="text-slate-400 text-2xl leading-none px-2" aria-label="Close">&times;</button>
+          </div>
+          <div id="exl-sheet-body" class="space-y-3"></div>
+          <p id="exl-sheet-error" class="hidden text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2" role="alert"></p>
+          <button type="submit" class="w-full rounded-xl bg-rose-700 hover:bg-rose-800 text-white font-bold py-3 shadow">Save</button>
+        </form>
+      </div>
+    </section>
+
     <!-- ===================== PANEL 5: REPORTS ===================== -->
     <!-- Driven by reports.js. Needs internet (history lives in Google Sheets). -->
     <section id="panel-reports" role="tabpanel" aria-labelledby="tab-reports" class="hidden panel-enter">
-      <nav class="grid grid-cols-2 gap-1 bg-white p-1 rounded-xl shadow-sm mb-3 text-xs font-semibold" role="tablist" aria-label="Report">
+      <nav class="grid grid-cols-3 gap-1 bg-white p-1 rounded-xl shadow-sm mb-3 text-xs font-semibold" role="tablist" aria-label="Report">
         <button type="button" class="rep-view-btn py-2 rounded-lg" data-view="sales">Customer sales</button>
         <button type="button" class="rep-view-btn py-2 rounded-lg" data-view="milk">Milk output</button>
+        <button type="button" class="rep-view-btn py-2 rounded-lg" data-view="expenses">Expenses</button>
       </nav>
       <div class="bg-white rounded-2xl shadow-sm p-5 space-y-4">
         <div id="rep-customer-wrap">
           <label for="rep-customer" class="hf-label">Customer</label>
           <select id="rep-customer" class="hf-input"><option value="ALL">All customers</option></select>
+        </div>
+        <div id="rep-expgroup-wrap" class="hidden">
+          <label for="rep-expgroup" class="hf-label">Expenses</label>
+          <select id="rep-expgroup" class="hf-input">
+            <option value="ALL">All expenses (with profit)</option>
+            <option>Feed</option><option>Fodder production</option><option>Animal health</option><option>Breeding</option>
+            <option>Animal purchases</option><option>Labour</option><option>Utilities &amp; supplies</option><option>Repairs &amp; maintenance</option>
+            <option>Transport &amp; charges</option><option>Other</option>
+          </select>
+          <label for="rep-expby" class="hf-label mt-3">Totals by</label>
+          <select id="rep-expby" class="hf-input">
+            <option value="day">Day</option><option value="week">Week (Monday to Sunday)</option><option value="month" selected>Month</option><option value="year">Year</option>
+          </select>
         </div>
         <div id="rep-cow-wrap" class="hidden">
           <label for="rep-cow" class="hf-label">Cow</label>
@@ -847,11 +1082,14 @@
   <!-- App logic. `defer` runs both after the HTML is parsed, in this order:
        herd.js defines window.MaweHerd (herd register), sales.js defines
        window.MaweSales (sales, payments, returns, customers), reports.js defines
-       window.MaweReports (reports for chosen dates), then app.js boots the
+       window.MaweReports (reports for chosen dates), expenses.js defines
+       window.MaweExpenses (dairy expenses), then app.js boots the
        app and connects it to the database and sync engine.
        Both are pre-cached by sw.js — keep the file names identical. -->
   <script src="herd.js" defer></script>
   <script src="sales.js" defer></script>
+  <script src="expenses.js" defer></script>
+  <script src="expense-list.js" defer></script>
   <script src="reports.js" defer></script>
   <script src="app.js" defer></script>
 </body>

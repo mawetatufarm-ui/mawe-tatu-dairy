@@ -8,11 +8,15 @@
  *   • Milk output — one cow or all, From … To, by day / week / month:
  *     litres per session, totals, average per day, per-cow totals, and
  *     the lactations in the period (total and average per day).
+ *   • Expenses — all or one group, From … To: totals by group and
+ *     category, every expense, and (for all) milk sales, profit and
+ *     cost per litre over the same dates.
  *
  * The full history lives in Google Sheets (the phone keeps only 30 days),
  * so reports need internet. The data comes from PeriodReports.gs:
  *   { action: 'customerPeriodReport', customerId, from, to }
  *   { action: 'milkPeriodReport', cowId, from, to, groupBy }
+ *   { action: 'expensePeriodReport', from, to, group, groupBy: day|week|month|year }   (Expenses.gs)
  *
  * The Excel and PDF libraries are big, so they are downloaded only the
  * first time a file is made (internet is on anyway), not at app start:
@@ -40,7 +44,7 @@
     const show = (el, v) => el && el.classList.toggle('hidden', !v);
 
     let view = 'sales';
-    let current = { sales: null, milk: null };   // last report data per view
+    let current = { sales: null, milk: null, expenses: null };   // last report data per view
     const loaded = {};
 
     /* ---------------- helpers ---------------- */
@@ -109,6 +113,7 @@
       show($('#rep-customer-wrap'), name === 'sales');
       show($('#rep-cow-wrap'), name === 'milk');
       show($('#rep-group-wrap'), name === 'milk');
+      show($('#rep-expgroup-wrap'), name === 'expenses');
       setMsg('error', '');
       render();
     }
@@ -127,7 +132,9 @@
       try {
         const payload = view === 'sales'
           ? { action: 'customerPeriodReport', customerId: $('#rep-customer').value, from, to }
-          : { action: 'milkPeriodReport', cowId: $('#rep-cow').value, from, to, groupBy: $('#rep-group').value };
+          : view === 'milk'
+            ? { action: 'milkPeriodReport', cowId: $('#rep-cow').value, from, to, groupBy: $('#rep-group').value }
+            : { action: 'expensePeriodReport', group: $('#rep-expgroup').value, groupBy: $('#rep-expby').value, from, to };
         current[view] = await callServer(payload);
         render();
       } catch (err) {
@@ -218,9 +225,49 @@
       return html;
     }
 
+    const PERIOD_NAME = { day: 'day', week: 'week', month: 'month', year: 'year' };
+    const PERIOD_HEAD = { day: 'Day', week: 'Week of', month: 'Month', year: 'Year' };
+    function periodLabel(by, k) {
+      const [y, m, dd] = k.split('-').map(Number);
+      if (by === 'year') return String(y);
+      if (by === 'month') return new Date(y, m - 1, 1).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' });
+      return new Date(y, m - 1, dd).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: by === 'week' ? '2-digit' : undefined });
+    }
+
+    function renderExpenses(d) {
+      const inc = d.income;
+      let html = `<p class="text-xs text-slate-500 px-1">${d.group === 'ALL' ? 'All expenses' : esc(d.group)} · ${esc(fmtDate(d.from))} to ${esc(fmtDate(d.to))}</p>
+        <div class="grid grid-cols-2 gap-2 mt-2">
+          ${card('Total expenses', 'KES ' + money(d.total), 'text-rose-800')}
+          ${card('Expenses recorded', String(d.count))}
+          ${d.paid !== undefined ? card('Paid', 'KES ' + money(d.paid), 'text-farm-800') + card('Still owed', 'KES ' + money(d.owing), d.owing > 0 ? 'text-red-700' : '') : ''}`;
+      if (d.group === 'ALL') {
+        const cap = Number(inc.capital || 0);
+        html += `${card('Net milk sales', 'KES ' + money(inc.netSales))}
+          ${card('Running costs', 'KES ' + money(inc.expenses))}
+          ${card('Profit', 'KES ' + money(inc.profit), inc.profit < 0 ? 'text-red-700' : 'text-farm-800')}
+          ${cap ? card('Animal purchases (capital)', 'KES ' + money(cap)) + card('Profit after animal purchases', 'KES ' + money(inc.profitAfterCapital), inc.profitAfterCapital < 0 ? 'text-red-700' : 'text-farm-800') : ''}
+          ${card('Cost per litre produced', inc.costPerLitre === '' ? '—' : 'KES ' + money(inc.costPerLitre))}
+          ${card('Average selling price', inc.avgPrice === '' ? '—' : 'KES ' + money(inc.avgPrice) + '/L')}`;
+      }
+      html += '</div>';
+      if (!d.count) return html + '<p class="text-sm text-slate-400 px-1 mt-2">No expenses in this period.</p>';
+      if (d.periods && d.periods.length) {
+        html += `<h4 class="text-sm font-semibold text-slate-600 px-1 mt-4 mb-1">By ${esc(PERIOD_NAME[d.groupBy] || 'month')}</h4>` +
+          table([PERIOD_HEAD[d.groupBy] || 'Month', 'Total', 'Running', 'Capital', 'Still owed', 'No.'], d.periods.map((p) => [esc(periodLabel(d.groupBy, p.period)), `<b>${money(p.total)}</b>`,
+            money(p.running), p.capital ? money(p.capital) : '', p.owing ? `<span class="text-red-700">${money(p.owing)}</span>` : '', p.count]), 1);
+      }
+      html += '<h4 class="text-sm font-semibold text-slate-600 px-1 mt-4 mb-1">By category</h4>' +
+        table(['Category', 'Group', 'KES', 'Payments', 'Quantity'], d.categories.map((c) => [esc(c.category), esc(c.group), `<b>${money(c.total)}</b>`, c.count, esc(c.quantity)]), 2);
+      html += '<h4 class="text-sm font-semibold text-slate-600 px-1 mt-4 mb-1">Every expense</h4>' +
+        table(['Date', 'Category', 'Item', 'KES', 'Qty', 'Paid to'], d.lines.map((x) => [esc(fmtDate(x.date)), esc(x.category), esc(x.item), money(x.amount),
+          x.quantity === '' ? '' : `${x.quantity} ${esc(x.unit)}`, esc(x.payee)]), 3);
+      return html;
+    }
+
     function render() {
       const d = current[view];
-      $('#rep-result').innerHTML = d ? (view === 'sales' ? renderSales(d) : renderMilk(d)) : '';
+      $('#rep-result').innerHTML = d ? (view === 'sales' ? renderSales(d) : view === 'milk' ? renderMilk(d) : renderExpenses(d)) : '';
       document.querySelectorAll('.rep-dl').forEach((b) => { b.disabled = !d; });
     }
 
@@ -298,15 +345,43 @@
       return wb;
     }
 
+    function expensesWorkbook(d) {
+      const XLSX = window.XLSX;
+      const wb = XLSX.utils.book_new();
+      const inc = d.income;
+      const head = (t) => [[FARM + ' - ' + t], [`${d.group === 'ALL' ? 'All dairy expenses' : d.group}, ${fmtDate(d.from)} to ${fmtDate(d.to)}`], []];
+      const summary = head('Expenses summary').concat([['Total expenses (KES)', d.total], ['Expenses recorded', d.count]]);
+      if (d.paid !== undefined) summary.push(['Paid (KES)', d.paid], ['Still owed (KES)', d.owing]);
+      if (d.group === 'ALL') {
+        summary.push(['Milk produced (L)', inc.produced], ['Milk sold (L)', inc.sold], ['Net milk sales (KES)', inc.netSales],
+          ['Running costs (KES, excl. animal purchases)', inc.expenses], ['Profit (KES)', inc.profit],
+          ['Animal purchases - capital (KES)', inc.capital || 0], ['Profit after animal purchases (KES)', inc.profitAfterCapital ?? inc.profit],
+          ['Cost per litre produced (KES)', inc.costPerLitre], ['Feed & fodder cost per litre (KES)', inc.feedCostPerLitre], ['Average selling price (KES/L)', inc.avgPrice]);
+      }
+      summary.push([], ['Group', 'Amount (KES)', 'Share']);
+      d.groups.forEach((g) => summary.push([g.group, g.total, g.share]));
+      XLSX.utils.book_append_sheet(wb, sheetFrom(summary, [30, 16, 10], { 1: KES, 2: '0%' }), 'Summary');
+      if (d.periods && d.periods.length) {
+        XLSX.utils.book_append_sheet(wb, sheetFrom(head('Totals by ' + d.groupBy).concat([[PERIOD_HEAD[d.groupBy], 'Total (KES)', 'Running costs (KES)', 'Animal purchases (KES)', 'Still owed (KES)', 'Expenses']])
+          .concat(d.periods.map((p) => [d.groupBy === 'year' ? Number(p.period.slice(0, 4)) : toDate(p.period), p.total, p.running, p.capital, p.owing, p.count])),
+        [14, 14, 18, 20, 16, 10], { 1: KES, 2: KES, 3: KES, 4: KES }), 'By ' + d.groupBy);
+      }
+      XLSX.utils.book_append_sheet(wb, sheetFrom(head('By category').concat([['Group', 'Category', 'Amount (KES)', 'Payments', 'Quantity bought']])
+        .concat(d.categories.map((c) => [c.group, c.category, c.total, c.count, c.quantity])), [16, 26, 14, 10, 20], { 2: KES }), 'By category');
+      XLSX.utils.book_append_sheet(wb, sheetFrom(head('Every expense').concat([['Date', 'Expense ID', 'Group', 'Category', 'Item', 'Quantity', 'Unit', 'Price per unit (KES)', 'Amount (KES)', 'Paid by', 'Reference', 'Paid to', 'Animal', 'Notes']])
+        .concat(d.lines.map((x) => [toDate(x.date), x.expenseId, x.group, x.category, x.item, x.quantity, x.unit, x.unitPrice, x.amount, x.paymentMethod, x.receiptRef, x.payee, x.animalId, x.notes])),
+      [13, 14, 14, 24, 22, 9, 7, 13, 13, 9, 14, 20, 9, 24], { 5: '0.0', 7: KES, 8: KES }), 'Expenses');
+      return wb;
+    }
+
     async function downloadExcel() {
       const d = current[view];
       if (!d) return;
       setBusy(true, 'Making the Excel file…');
       try {
         await loadScript(LIBS.xlsx);
-        const wb = view === 'sales' ? salesWorkbook(d) : milkWorkbook(d);
-        const who = view === 'sales' ? (d.customers.length === 1 ? d.customers[0].name : 'All_customers') : d.cowName;
-        window.XLSX.writeFile(wb, `${view === 'sales' ? 'Sales' : 'Milk'}_${safeName(who)}_${d.from}_to_${d.to}.xlsx`);
+        const wb = view === 'sales' ? salesWorkbook(d) : view === 'milk' ? milkWorkbook(d) : expensesWorkbook(d);
+        window.XLSX.writeFile(wb, `${fileStem(d)}_${d.from}_to_${d.to}.xlsx`);
         toast('Excel file downloaded');
       } catch (err) {
         setMsg('error', err.message || String(err));
@@ -409,6 +484,46 @@
       return doc;
     }
 
+    function fileStem(d) {
+      if (view === 'sales') return 'Sales_' + safeName(d.customers.length === 1 ? d.customers[0].name : 'All_customers');
+      if (view === 'milk') return 'Milk_' + safeName(d.cowName);
+      return 'Expenses_' + safeName(d.group === 'ALL' ? 'All' : d.group);
+    }
+
+    function expensesPdf(d) {
+      const doc = new window.jspdf.jsPDF({ unit: 'mm', format: 'a4' });
+      const inc = d.income;
+      let y = pdfHeader(doc, `Dairy expenses${d.group === 'ALL' ? '' : ' - ' + d.group}`, `${fmtDate(d.from)} to ${fmtDate(d.to)} - total KES ${money(d.total)} in ${d.count} payment(s)`);
+      if (d.group === 'ALL') {
+        doc.autoTable({ ...tableStyle, startY: y, head: [['Milk produced', 'Net milk sales', 'Running costs', 'Profit', 'Cost per litre', 'Avg selling price']],
+          body: [[`${inc.produced} L`, money(inc.netSales), money(inc.expenses), money(inc.profit), inc.costPerLitre === '' ? '-' : money(inc.costPerLitre), inc.avgPrice === '' ? '-' : money(inc.avgPrice)]] });
+        y = doc.lastAutoTable.finalY + 2;
+        if (Number(inc.capital || 0)) {
+          doc.setFontSize(9);
+          doc.text(ascii(`Animal purchases (capital, not in running costs): KES ${money(inc.capital)}. Profit after animal purchases: KES ${money(inc.profitAfterCapital)}.`), 14, y + 4);
+          y += 6;
+        }
+        y += 4;
+      }
+      if (d.paid !== undefined) { doc.setFontSize(9); doc.text(ascii(`Paid KES ${money(d.paid)} - still owed KES ${money(d.owing)}.`), 14, y); y += 5; }
+      if (d.periods && d.periods.length > 1) {
+        doc.autoTable({ ...tableStyle, startY: y, head: [[PERIOD_HEAD[d.groupBy], 'Total', 'Running costs', 'Animal purchases', 'Still owed', 'No.']],
+          body: d.periods.map((p) => [ascii(periodLabel(d.groupBy, p.period)), money(p.total), money(p.running), p.capital ? money(p.capital) : '', p.owing ? money(p.owing) : '', p.count]),
+          columnStyles: { 1: { halign: 'right', fontStyle: 'bold' }, 2: { halign: 'right' }, 3: { halign: 'right' }, 4: { halign: 'right' } } });
+        y = doc.lastAutoTable.finalY + 6;
+      }
+      doc.autoTable({ ...tableStyle, startY: y, head: [['Category', 'Group', 'Amount (KES)', 'Payments', 'Quantity']],
+        body: d.categories.length ? d.categories.map((c) => [ascii(c.category), ascii(c.group), money(c.total), c.count, ascii(c.quantity)]) : [['No expenses in this period.', '', '', '', '']],
+        columnStyles: { 2: { halign: 'right', fontStyle: 'bold' }, 3: { halign: 'right' } } });
+      if (d.lines.length) {
+        doc.autoTable({ ...tableStyle, startY: doc.lastAutoTable.finalY + 6, head: [['Date', 'Category', 'Item', 'Qty', 'Amount', 'Paid by', 'Paid to']],
+          body: d.lines.map((x) => [ascii(fmtDate(x.date)), ascii(x.category), ascii(x.item), x.quantity === '' ? '' : `${x.quantity} ${ascii(x.unit)}`, money(x.amount), ascii(x.paymentMethod), ascii(x.payee)]),
+          columnStyles: { 4: { halign: 'right' } } });
+      }
+      pdfFooter(doc);
+      return doc;
+    }
+
     async function downloadPdf() {
       const d = current[view];
       if (!d) return;
@@ -416,9 +531,8 @@
       try {
         await loadScript(LIBS.jspdf);
         await loadScript(LIBS.autotable);
-        const doc = view === 'sales' ? salesPdf(d) : milkPdf(d);
-        const who = view === 'sales' ? (d.customers.length === 1 ? d.customers[0].name : 'All_customers') : d.cowName;
-        doc.save(`${view === 'sales' ? 'Statement' : 'Milk'}_${safeName(who)}_${d.from}_to_${d.to}.pdf`);
+        const doc = view === 'sales' ? salesPdf(d) : view === 'milk' ? milkPdf(d) : expensesPdf(d);
+        doc.save(`${fileStem(d).replace(/^Sales_/, 'Statement_')}_${d.from}_to_${d.to}.pdf`);
         toast('PDF downloaded');
       } catch (err) {
         setMsg('error', err.message || String(err));

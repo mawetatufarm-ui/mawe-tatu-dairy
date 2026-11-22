@@ -6,7 +6,7 @@
  *
  * Strategy
  *   • INSTALL: download and cache every file the app needs (the "app shell"):
- *     index.html, herd.js, sales.js, reports.js, app.js, manifest.json, the two icons, the
+ *     index.html, herd.js, sales.js, reports.js, expenses.js, expense-list.js, app.js, manifest.json, the two icons, the
  *     Tailwind CDN script and the Dexie CDN script.
  *     If any file fails to download, the install fails and the browser
  *     retries on the next visit, so a half-cached app is never activated.
@@ -20,13 +20,13 @@
  *   • UPDATE: a new sw.js waits until app.js sends SKIP_WAITING (the user
  *     taps "Reload" on the update banner), so nobody loses a half-typed entry.
  *
- * ►► Whenever you change ANY app file (index.html, herd.js, sales.js, reports.js, app.js, a CDN URL),
+ * ►► Whenever you change ANY app file (index.html, herd.js, sales.js, reports.js, expenses.js, expense-list.js, app.js, a CDN URL),
  *    bump CACHE_VERSION below. That is what tells phones to update.
  * ===================================================================== */
 
 'use strict';
 
-const CACHE_VERSION = 'v5.1.0'; // v5.1.0: reports (reports.js) · v5.0.0: sales (sales.js) · v4.0.0: herd register (herd.js) · v3.0.0: Google Sign-In
+const CACHE_VERSION = 'v5.4.0'; // v5.4.0: expense list, credit, edits, receipts (expense-list.js) · v5.3.0: feed batch costing, more expense categories · v5.2.0: expenses (expenses.js) · v5.1.0: reports (reports.js) · v5.0.0: sales (sales.js) · v4.0.0: herd register (herd.js) · v3.0.0: Google Sign-In
 const CACHE_PREFIX = 'mawe-tatu-';
 const SHELL_CACHE = `${CACHE_PREFIX}shell-${CACHE_VERSION}`;
 
@@ -42,6 +42,8 @@ const LOCAL_ASSETS = [
   new URL('./herd.js', SCOPE).href,
   new URL('./sales.js', SCOPE).href,
   new URL('./reports.js', SCOPE).href,
+  new URL('./expenses.js', SCOPE).href,
+  new URL('./expense-list.js', SCOPE).href,
   new URL('./app.js', SCOPE).href,
   new URL('./manifest.json', SCOPE).href,
   new URL('./icon-192.png', SCOPE).href,
