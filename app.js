@@ -93,13 +93,16 @@
   const EXPENSE_PAYMENTS = 'expense_payments';
   const EXPENSE_EDITS = 'expense_edits';
   const RECEIPTS = 'receipts';
+  // v5.5 (fodder.js): silage / hay batches and feed-out.
+  const FODDER_BATCHES = 'fodder_batches';
+  const FODDER_FEEDOUT = 'fodder_feedout';
 
   // Append-only stores, in upload order: prices before sales, sales before the
   // payments and returns that refer to them.
-  const APPEND_STORES = Object.freeze([SALES.PRICES, STORES.MILK, STORES.CALF, SALES.SALES, SALES.PAYMENTS, SALES.RETURNS, EXPENSES, EXPENSE_PAYMENTS, FEED_BATCHES]);
+  const APPEND_STORES = Object.freeze([SALES.PRICES, STORES.MILK, STORES.CALF, SALES.SALES, SALES.PAYMENTS, SALES.RETURNS, EXPENSES, EXPENSE_PAYMENTS, FEED_BATCHES, FODDER_BATCHES, FODDER_FEEDOUT]);
   // Synced rows of these are removed from the phone after 30 days (prices are
   // kept: the sheet's list replaces them on every download).
-  const PRUNE_STORES = Object.freeze([STORES.MILK, STORES.CALF, SALES.SALES, SALES.PAYMENTS, SALES.RETURNS, EXPENSES, EXPENSE_PAYMENTS, FEED_BATCHES, EXPENSE_EDITS]);
+  const PRUNE_STORES = Object.freeze([STORES.MILK, STORES.CALF, SALES.SALES, SALES.PAYMENTS, SALES.RETURNS, EXPENSES, EXPENSE_PAYMENTS, FEED_BATCHES, EXPENSE_EDITS, FODDER_FEEDOUT]);
 
   // pending -> (upload) -> synced
   // pending -> (server rejected the record) -> failed -> retried each run
@@ -120,6 +123,8 @@
     [EXPENSES]: 'Expenses',
     [FEED_BATCHES]: 'Feed_Batches',
     [EXPENSE_PAYMENTS]: 'Expense_Payments',
+    [FODDER_BATCHES]: 'Fodder_Batches',
+    [FODDER_FEEDOUT]: 'Fodder_Feedout',
   });
 
   // Exactly which fields are sent to the server for each store.
@@ -134,6 +139,7 @@
     // Expenses and feed batches: the field lists live in expenses.js (MaweExpenses.PAYLOAD).
     ...((window.MaweExpenses && window.MaweExpenses.PAYLOAD) || {}),
     ...((window.MaweExpenseList && window.MaweExpenseList.PAYLOAD) || {}),
+    ...((window.MaweFodder && window.MaweFodder.PAYLOAD) || {}),
   });
 
   // The three daily milkings at Mawe Tatu: ~5:00 am, ~1:00 pm, ~8:30 pm.
@@ -169,7 +175,7 @@
    *   herd, status, category  list filters and dropdowns
    *   damId                   offspring lookups
    * Existing milk and calf rows are untouched by the upgrades. Never edit
-   * an old version block; add db.version(7) for the next schema change.
+   * an old version block; add db.version(8) for the next schema change.
    * ------------------------------------------------------------------ */
 
   const db = new Dexie(DB_NAME);
@@ -213,6 +219,14 @@
     [RECEIPTS]: '++id, &clientId, syncStatus, expenseId, createdAt',
   });
 
+  /* Version 7 (silage / hay batches and feed-out — fodder.js). Batches are
+   * kept on the phone (few, and the feed-out list needs them); feed-outs
+   * are pruned 30 days after upload. */
+  db.version(7).stores({
+    [FODDER_BATCHES]: '++id, &clientId, syncStatus, date, batchId, createdAt',
+    [FODDER_FEEDOUT]: '++id, &clientId, syncStatus, date, batchId, createdAt',
+  });
+
   /** The herd register module (herd.js). Created in init() once the DB is open. */
   let herd = null;
   /** The sales module (sales.js). Created in init(). */
@@ -221,6 +235,8 @@
   let reports = null;
   /** The expenses module (expenses.js). Created in init(). */
   let expenses = null;
+  /** The fodder module (fodder.js). Created in init(). */
+  let fodder = null;
 
   /* ------------------------------------------------------------------
    * 4. UTILITY HELPERS
@@ -552,6 +568,7 @@
     sales: { active: ['bg-violet-700', 'text-white', 'shadow'], idle: ['text-slate-600', 'hover:bg-slate-100'] },
     reports: { active: ['bg-teal-700', 'text-white', 'shadow'], idle: ['text-slate-600', 'hover:bg-slate-100'] },
     expenses: { active: ['bg-rose-700', 'text-white', 'shadow'], idle: ['text-slate-600', 'hover:bg-slate-100'] },
+    fodder: { active: ['bg-lime-700', 'text-white', 'shadow'], idle: ['text-slate-600', 'hover:bg-slate-100'] },
   };
 
   function activateTab(name) {
@@ -1222,6 +1239,7 @@
             // Feed prices for batch costing. Not essential: an older Apps Script
             // without listFeedPrices just means the batch form uses this phone's prices.
             if (expenses) await expenses.refreshPrices(false);
+            if (fodder) await fodder.refresh(false);
           }
           return totals;
         });
@@ -1558,6 +1576,7 @@
       if (res && res.renamed && (res.status === 'saved' || res.status === 'duplicate')) {
         if (storeName === EXPENSES && expenses) await expenses.applyRename(storeName, rec, res.renamed);
         else if (storeName === EXPENSE_PAYMENTS && expenses) await expenses.applyPaymentRename(rec, res.renamed);
+        else if (storeName === FODDER_BATCHES && fodder) await fodder.applyRename(storeName, rec, res.renamed);
         else if (sales) await sales.applyRename(storeName, rec, res.renamed);
       }
     }
@@ -1799,6 +1818,17 @@
       expenses.init();
     } else {
       console.warn('expenses.js did not load: the Expenses tab is unavailable.');
+    }
+
+    // Fodder tab (fodder.js): silage / hay batches, costs, feed-out.
+    if (window.MaweFodder) {
+      fodder = window.MaweFodder.create({
+        db, SYNC_STATUS, getSession: () => session, getDeviceId, makeUUID, todayLocal, esc, toast, requestSync,
+        saveDebounceMs: SYNC_CONFIG.SAVE_DEBOUNCE_MS, callServer,
+      });
+      fodder.init();
+    } else {
+      console.warn('fodder.js did not load: the Fodder tab is unavailable.');
     }
 
     // Reports tab (reports.js): customer sales, milk output and expenses for chosen dates.
