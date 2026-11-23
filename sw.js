@@ -26,7 +26,7 @@
 
 'use strict';
 
-const CACHE_VERSION = 'v5.8.0'; // v5.8.0: milk summary, use & quality (milkuse.js) · v5.7.0: health and milk withdrawal (health.js), corrections · v5.6.0: breeding and calving (breeding.js) · v5.5.1: container fills, fairer feeding rate · v5.5.0: Fodder tab — silage / hay batches, feed-out (fodder.js) · v5.4.0: expense list, credit, edits, receipts (expense-list.js) · v5.3.0: feed batch costing, more expense categories · v5.2.0: expenses (expenses.js) · v5.1.0: reports (reports.js) · v5.0.0: sales (sales.js) · v4.0.0: herd register (herd.js) · v3.0.0: Google Sign-In
+const CACHE_VERSION = 'v5.8.1'; // v5.8.1: refresh app.js (new deployment address) · v5.8.0: milk summary, use & quality (milkuse.js) · v5.7.0: health and milk withdrawal (health.js), corrections · v5.6.0: breeding and calving (breeding.js) · v5.5.1: container fills, fairer feeding rate · v5.5.0: Fodder tab — silage / hay batches, feed-out (fodder.js) · v5.4.0: expense list, credit, edits, receipts (expense-list.js) · v5.3.0: feed batch costing, more expense categories · v5.2.0: expenses (expenses.js) · v5.1.0: reports (reports.js) · v5.0.0: sales (sales.js) · v4.0.0: herd register (herd.js) · v3.0.0: Google Sign-In
 const CACHE_PREFIX = 'mawe-tatu-';
 const SHELL_CACHE = `${CACHE_PREFIX}shell-${CACHE_VERSION}`;
 

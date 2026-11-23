@@ -1607,7 +1607,9 @@
       // TypeError: no connection, DNS failure — or the deployment is not
       // shared with "Anyone" (Google redirects to a sign-in page, which the
       // browser blocks as a CORS failure).
-      throw new SyncError('Could not reach Google Sheets', 'network');
+      // Show the end of the address in use, so a wrong or old deployment is easy to spot.
+      const tail = (SYNC_CONFIG.ENDPOINT_URL.trim().match(/\/s\/([\w-]+)\/exec/) || [, ''])[1].slice(-6);
+      throw new SyncError(`Could not reach Google Sheets (address …${tail})`, 'network');
     } finally {
       clearTimeout(timeout);
     }
