@@ -42,7 +42,7 @@
    * ------------------------------------------------------------------ */
 
   const SYNC_CONFIG = Object.freeze({
-    ENDPOINT_URL: 'https://script.google.com/macros/s/AKfycbyD32v0BqQcdmsn11TYS9VhbzoGqbSbBjCb2PE_ybqe8UDLJBrXAr25c19hSkuioHCR/exec',
+    ENDPOINT_URL: 'https://script.google.com/macros/s/AKfycbzn6DoJlO7-8_Ci85lR4sB7X9pH88FVdrISkh3bQLePLVmjd79YpJJ3xPfm0yxyGda-/exec',
 
     BATCH_SIZE: 25,                 // records per POST (Apps Script handles this comfortably)
     REQUEST_TIMEOUT_MS: 30000,      // Apps Script cold starts can take several seconds
