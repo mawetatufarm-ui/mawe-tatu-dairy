@@ -102,13 +102,16 @@
   const HEALTH = 'health_events';
   // v5.7: corrections and cancellations of uploaded breeding / health records (→ Corrections.gs).
   const CORRECTIONS = 'corrections';
+  // v5.8 (milkuse.js): where the milk went and quality checks.
+  const MILK_USE = 'milk_use';
+  const MILK_QUALITY = 'milk_quality';
 
   // Append-only stores, in upload order: prices before sales, sales before the
   // payments and returns that refer to them.
-  const APPEND_STORES = Object.freeze([SALES.PRICES, STORES.MILK, STORES.CALF, SALES.SALES, SALES.PAYMENTS, SALES.RETURNS, EXPENSES, EXPENSE_PAYMENTS, FEED_BATCHES, FODDER_BATCHES, FODDER_FEEDOUT, BREEDING, HEALTH]);
+  const APPEND_STORES = Object.freeze([SALES.PRICES, STORES.MILK, STORES.CALF, SALES.SALES, SALES.PAYMENTS, SALES.RETURNS, EXPENSES, EXPENSE_PAYMENTS, FEED_BATCHES, FODDER_BATCHES, FODDER_FEEDOUT, BREEDING, HEALTH, MILK_USE, MILK_QUALITY]);
   // Synced rows of these are removed from the phone after 30 days (prices are
   // kept: the sheet's list replaces them on every download).
-  const PRUNE_STORES = Object.freeze([STORES.MILK, STORES.CALF, SALES.SALES, SALES.PAYMENTS, SALES.RETURNS, EXPENSES, EXPENSE_PAYMENTS, FEED_BATCHES, EXPENSE_EDITS, FODDER_FEEDOUT, CORRECTIONS]);
+  const PRUNE_STORES = Object.freeze([STORES.MILK, STORES.CALF, SALES.SALES, SALES.PAYMENTS, SALES.RETURNS, EXPENSES, EXPENSE_PAYMENTS, FEED_BATCHES, EXPENSE_EDITS, FODDER_FEEDOUT, CORRECTIONS, MILK_USE, MILK_QUALITY]);
 
   // pending -> (upload) -> synced
   // pending -> (server rejected the record) -> failed -> retried each run
@@ -133,6 +136,8 @@
     [FODDER_FEEDOUT]: 'Fodder_Feedout',
     [BREEDING]: 'Breeding_Events',
     [HEALTH]: 'Health_Events',
+    [MILK_USE]: 'Milk_Use',
+    [MILK_QUALITY]: 'Milk_Quality',
   });
 
   // Exactly which fields are sent to the server for each store.
@@ -150,6 +155,7 @@
     ...((window.MaweFodder && window.MaweFodder.PAYLOAD) || {}),
     ...((window.MaweBreeding && window.MaweBreeding.PAYLOAD) || {}),
     ...((window.MaweHealth && window.MaweHealth.PAYLOAD) || {}),
+    ...((window.MaweMilkUse && window.MaweMilkUse.PAYLOAD) || {}),
   });
 
   // The three daily milkings at Mawe Tatu: ~5:00 am, ~1:00 pm, ~8:30 pm.
@@ -185,7 +191,7 @@
    *   herd, status, category  list filters and dropdowns
    *   damId                   offspring lookups
    * Existing milk and calf rows are untouched by the upgrades. Never edit
-   * an old version block; add db.version(10) for the next schema change.
+   * an old version block; add db.version(11) for the next schema change.
    * ------------------------------------------------------------------ */
 
   const db = new Dexie(DB_NAME);
@@ -250,6 +256,12 @@
     [CORRECTIONS]: '++id, &clientId, syncStatus, sheet, recordId, createdAt',
   });
 
+  /* Version 10 (milk use and quality — milkuse.js). Pruned 30 days after upload. */
+  db.version(10).stores({
+    [MILK_USE]: '++id, &clientId, syncStatus, date, useId, createdAt',
+    [MILK_QUALITY]: '++id, &clientId, syncStatus, date, checkId, createdAt',
+  });
+
   /** The herd register module (herd.js). Created in init() once the DB is open. */
   let herd = null;
   /** The sales module (sales.js). Created in init(). */
@@ -264,6 +276,8 @@
   let breeding = null;
   /** The health module (health.js). Created in init(). */
   let health = null;
+  /** The milk use module (milkuse.js). Created in init(). */
+  let milkUse = null;
 
   /* ------------------------------------------------------------------
    * 4. UTILITY HELPERS
@@ -1270,6 +1284,7 @@
             if (fodder) await fodder.refresh(false);
             if (breeding) await breeding.refresh(false);
             if (health) await health.refresh(false);
+            if (milkUse) await milkUse.refresh(false);
           }
           return totals;
         });
@@ -1653,6 +1668,7 @@
         else if (storeName === FODDER_BATCHES && fodder) await fodder.applyRename(storeName, rec, res.renamed);
         else if (storeName === BREEDING && breeding) await breeding.applyRename(storeName, rec, res.renamed);
         else if (storeName === HEALTH && health) await health.applyRename(storeName, rec, res.renamed);
+        else if ((storeName === MILK_USE || storeName === MILK_QUALITY) && milkUse) await milkUse.applyRename(storeName, rec, res.renamed);
         else if (sales) await sales.applyRename(storeName, rec, res.renamed);
       }
     }
@@ -1798,6 +1814,7 @@
   window.FarmDB = Object.freeze({
     get breeding() { return breeding; },
     get health() { return health; },
+    get milkUse() { return milkUse; },
     db, STORES, SYNC_STATUS, SHEET_FOR_STORE, MILK_SESSIONS, FEED_TYPES,
     addMilkLog, addCalfLog, getPending, countPending,
     markSynced, markFailed, deleteUnsynced,
@@ -1930,6 +1947,17 @@
       health.init();
     } else {
       console.warn('health.js did not load: the Health view is unavailable.');
+    }
+
+    // Milk tab: summary, Use & quality (milkuse.js). Uses health.js for "withheld".
+    if (window.MaweMilkUse) {
+      milkUse = window.MaweMilkUse.create({
+        db, SYNC_STATUS, getSession: () => session, getDeviceId, makeUUID, todayLocal, esc, toast, requestSync,
+        saveDebounceMs: SYNC_CONFIG.SAVE_DEBOUNCE_MS, callServer, queueCorrection, getHealth: () => health,
+      });
+      milkUse.init();
+    } else {
+      console.warn('milkuse.js did not load: the milk summary is unavailable.');
     }
 
     // Reports tab (reports.js): customer sales, milk output and expenses for chosen dates.

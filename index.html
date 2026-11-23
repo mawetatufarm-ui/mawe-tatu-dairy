@@ -191,6 +191,13 @@
     <section id="panel-milk" role="tabpanel" aria-labelledby="tab-milk" class="panel-enter">
       <!-- health.js: cows whose milk must not be sold (withdrawal after treatment) -->
       <p id="hl-milk-banner" class="hidden mb-3 rounded-xl bg-red-50 border border-red-200 text-red-800 text-sm px-4 py-3" role="alert"></p>
+      <!-- milkuse.js: today's milk, last 7 days, cows dropping -->
+      <section id="mk-summary" class="bg-white rounded-2xl shadow-sm p-4 mb-3" aria-live="polite"></section>
+      <div class="grid grid-cols-2 gap-2 mb-3" role="group" aria-label="Milk view">
+        <button type="button" class="mk-view-btn rounded-xl py-2.5 text-sm font-bold shadow-sm bg-farm-700 text-white" data-view="milking" aria-pressed="true">Milking</button>
+        <button type="button" class="mk-view-btn rounded-xl py-2.5 text-sm font-bold shadow-sm bg-white text-farm-800" data-view="use" aria-pressed="false">Use &amp; quality</button>
+      </div>
+      <div id="mk-view-milking">
       <form id="milk-form" class="bg-white rounded-2xl shadow-sm p-5 space-y-4" novalidate autocomplete="off">
         <h2 class="text-base font-bold text-farm-800">Record milk yield</h2>
 
@@ -244,6 +251,59 @@
       <div class="mt-5">
         <h3 class="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-2 px-1">Recent milk entries</h3>
         <ul id="milk-recent" class="space-y-2"></ul>
+      </div>
+      </div>
+
+      <!-- Use & quality (milkuse.js) -->
+      <div id="mk-view-use" class="hidden space-y-4">
+        <form id="mu-form" class="bg-white rounded-2xl shadow-sm p-5 space-y-3" novalidate autocomplete="off">
+          <div class="flex items-center justify-between gap-2">
+            <h2 class="text-base font-bold text-farm-800">Where the milk went</h2>
+            <input id="mu-date" type="date" class="hf-input !w-auto" aria-label="Date" />
+          </div>
+          <p class="text-xs text-slate-500 -mt-1">Sold, calves (Calf Feed) and milk withheld after treatment are counted automatically: enter only the rest.</p>
+          <div class="grid grid-cols-2 gap-3">
+            <div><label for="mu-home" class="hf-label">Home use (L)</label><input id="mu-home" type="number" min="0" step="0.1" inputmode="decimal" class="hf-input" /></div>
+            <div><label for="mu-spoilt" class="hf-label">Spoilt / spilt (L)</label><input id="mu-spoilt" type="number" min="0" step="0.1" inputmode="decimal" class="hf-input" /></div>
+            <div><label for="mu-rejected" class="hf-label">Rejected by a buyer (L)</label><input id="mu-rejected" type="number" min="0" step="0.1" inputmode="decimal" class="hf-input" /></div>
+            <div><label for="mu-buyer" class="hf-label">Which buyer</label><input id="mu-buyer" type="text" maxlength="80" list="mu-buyer-list" class="hf-input" /><datalist id="mu-buyer-list"></datalist></div>
+            <div><label for="mu-other" class="hf-label">Other (L)</label><input id="mu-other" type="number" min="0" step="0.1" inputmode="decimal" class="hf-input" /></div>
+            <div><label for="mu-reason" class="hf-label">Reason (optional)</label><input id="mu-reason" type="text" maxlength="120" class="hf-input" placeholder="e.g. sour, low lactometer" /></div>
+          </div>
+          <p class="text-xs text-slate-500">If a sale was already recorded and milk came back, record a Return in Sales instead.</p>
+          <p id="mu-guide" class="text-xs text-slate-700 bg-farm-50 rounded-lg px-3 py-2"></p>
+          <input id="mu-notes" type="text" maxlength="300" class="hf-input" placeholder="Notes (optional)" aria-label="Notes" />
+          <p id="mu-error" class="hidden text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2" role="alert"></p>
+          <button type="submit" class="w-full rounded-xl bg-farm-700 hover:bg-farm-800 text-white font-bold py-3 shadow">Save milk use</button>
+        </form>
+
+        <form id="mq-form" class="bg-white rounded-2xl shadow-sm p-5 space-y-3" novalidate autocomplete="off">
+          <h2 class="text-base font-bold text-farm-800">Quality check</h2>
+          <div class="grid grid-cols-2 gap-3">
+            <div><label for="mq-date" class="hf-label">Date</label><input id="mq-date" type="date" class="hf-input" /></div>
+            <div><label for="mq-session" class="hf-label">Milking</label><select id="mq-session" class="hf-input"><option>Morning</option><option>Afternoon</option><option>Evening</option></select></div>
+            <div><label for="mq-test" class="hf-label">Test</label><select id="mq-test" class="hf-input"><option>Lactometer</option><option>Alcohol test</option><option>Smell &amp; colour</option><option>Temperature</option><option>Other</option></select></div>
+            <div><label for="mq-sample" class="hf-label">Sample</label><select id="mq-sample" class="hf-input"></select></div>
+            <div id="mq-reading-wrap"><label id="mq-reading-label" for="mq-reading" class="hf-label">Reading</label><input id="mq-reading" type="number" step="0.001" inputmode="decimal" class="hf-input" /></div>
+            <div id="mq-result-wrap" class="hidden"><label for="mq-result" class="hf-label">Result</label><select id="mq-result" class="hf-input"><option value="">—</option><option>Pass</option><option>Fail</option></select></div>
+          </div>
+          <p id="mq-verdict" class="text-xs empty:hidden"></p>
+          <input id="mq-notes" type="text" maxlength="300" class="hf-input" placeholder="Notes (optional)" aria-label="Notes" />
+          <p id="mq-error" class="hidden text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2" role="alert"></p>
+          <button type="submit" class="w-full rounded-xl bg-farm-700 hover:bg-farm-800 text-white font-bold py-3 shadow">Save check</button>
+        </form>
+
+        <div>
+          <div class="flex items-center justify-between px-1 mb-2">
+            <h3 class="text-sm font-semibold text-slate-500 uppercase tracking-wide">Daily balance (from the sheet)</h3>
+            <button type="button" id="mu-refresh" class="text-xs font-semibold text-farm-700 underline">Update</button>
+          </div>
+          <div id="mu-days" class="bg-white rounded-xl shadow-sm p-3 overflow-x-auto"></div>
+        </div>
+        <div>
+          <h3 class="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-2 px-1">Recent on this phone</h3>
+          <ul id="mu-recent" class="space-y-2"></ul>
+        </div>
       </div>
     </section>
 
@@ -1351,6 +1411,7 @@
   <script src="fodder.js" defer></script>
   <script src="breeding.js" defer></script>
   <script src="health.js" defer></script>
+  <script src="milkuse.js" defer></script>
   <script src="reports.js" defer></script>
   <script src="app.js" defer></script>
 </body>
