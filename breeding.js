@@ -20,6 +20,10 @@
  * append only, never pruned (a few dozen a year). kv 'breedingList' keeps
  * the server's listBreeding reply (events from other phones, AI costs).
  * IDs: BR + YYMMDD + -NNN; if taken the server adds a letter (applyRename).
+ * v5.7: Edit / Cancel in each cow's history. Before upload the phone's
+ * record is changed or deleted; after upload a correction is queued
+ * (app.js → Corrections.gs, audit in Record_Changes). Afterwards the cow's
+ * herd record is brought in line with her events (reconcileHerd).
  *
  * Loaded by index.html after herd.js and expenses.js, before app.js;
  * defines window.MaweBreeding.
@@ -206,6 +210,8 @@
   /* ---- END BREEDING MODEL ---- */
 
   const STORE = 'breeding_events';
+  const SHEET = 'Breeding_Events';
+  const EDITABLE = ['date', 'method', 'sireId', 'sireCode', 'semenType', 'technician', 'result', 'calvingEase', 'calfWeightKg', 'notes'];
   const PAYLOAD = Object.freeze({
     [STORE]: ['clientId', 'deviceId', 'eventId', 'date', 'animalId', 'eventType', 'method', 'sireId', 'sireCode', 'semenType', 'technician', 'result',
       'calvingEase', 'calfSex', 'calfWeightKg', 'calfOutcome', 'calfId', 'expenseId', 'notes', 'recordedBy', 'createdAt'],
@@ -218,7 +224,7 @@
   };
 
   function create(deps) {
-    const { db, SYNC_STATUS, getSession, getDeviceId, makeUUID, todayLocal, esc, toast, requestSync, saveDebounceMs, callServer, herd, expenses } = deps;
+    const { db, SYNC_STATUS, getSession, getDeviceId, makeUUID, todayLocal, esc, toast, requestSync, saveDebounceMs, callServer, herd, expenses, queueCorrection } = deps;
     const $ = (s) => document.querySelector(s);
     const $$ = (s) => [...document.querySelectorAll(s)];
     const show = (el, v) => el && el.classList.toggle('hidden', !v);
@@ -230,13 +236,14 @@
     let local = [];      // breeding_events on this phone
     let animals = [];
     let pendingExpenseId = ''; // when recording a service from an AI cost
+    let editing = null;        // the event being corrected
 
     /* ================= data ================= */
 
     function allEvents() {
-      const srv = (server && server.events) || [];
+      const srv = ((server && server.events) || []).map((e) => { const l = local.find((x) => x.clientId === e.clientId); return l && l.syncStatus !== SYNC_STATUS.SYNCED ? { ...e, ...l } : e; }); // once uploaded, the sheet's copy wins (it has corrections from any phone)
       const ids = new Set(srv.map((e) => e.clientId));
-      return srv.concat(local.filter((e) => !ids.has(e.clientId)));
+      return srv.concat(local.filter((e) => !ids.has(e.clientId))).filter((e) => !e.voided && e.status !== 'Void');
     }
     function farmFemales() {
       return animals.filter((a) => a.herd === 'farm' && a.sex === 'Female' && (a.category === 'Cow' || a.category === 'Heifer') && a.status === 'Active')
@@ -275,11 +282,15 @@
       $$('.herd-view-btn').forEach((b) => {
         const on = b.dataset.view === view;
         b.setAttribute('aria-pressed', String(on));
-        b.classList.toggle('bg-sky-700', on); b.classList.toggle('text-white', on);
+        const c = b.dataset.view === 'health' ? 'bg-teal-700' : 'bg-sky-700';
+        b.classList.remove('bg-sky-700', 'bg-teal-700');
+        if (on) b.classList.add(c);
+        b.classList.toggle('text-white', on);
         b.classList.toggle('bg-white', !on); b.classList.toggle('text-sky-800', !on);
       });
       show($('#herd-animals'), view === 'animals');
       show($('#breed-view'), view === 'breeding');
+      show($('#health-view'), view === 'health');
       if (view === 'breeding') { render(); refresh(false); }
     }
 
@@ -344,7 +355,9 @@
       const pending = new Set(local.filter((e) => e.syncStatus !== SYNC_STATUS.SYNCED).map((e) => e.clientId));
       const past = c && c.history.length ? `<p class="font-semibold mt-1">Past calvings</p><ul class="list-disc pl-5">${c.history.map((h) =>
         `<li>Calved ${fmt(h.calving)} · ${h.services} service${h.services === 1 ? '' : 's'} · ${h.daysOpen !== '' ? h.daysOpen + ' days open · ' : ''}interval ${h.interval} days</li>`).join('')}</ul>` : '';
-      return (evs.length ? `<ul class="space-y-1">${evs.map((e) => `<li>${esc(fmt(e.date))} · <b>${esc(e.eventType)}</b>${detail(e)}${pending.has(e.clientId) ? ' <span class="text-amber-700">(not uploaded)</span>' : ''}</li>`).join('')}</ul>`
+      return (evs.length ? `<ul class="space-y-2">${evs.map((e) => `<li class="border-t border-slate-100 pt-1">${esc(fmt(e.date))} · <b>${esc(e.eventType)}</b>${detail(e)}${pending.has(e.clientId) ? ' <span class="text-amber-700">(not uploaded)</span>' : ''}
+          <span class="flex gap-3 mt-1"><button type="button" class="brd-edit text-sky-700 font-semibold" data-id="${esc(e.clientId)}">Edit</button>
+          <button type="button" class="brd-cancel-ev text-slate-500" data-id="${esc(e.clientId)}">${pending.has(e.clientId) ? 'Delete' : 'Cancel'}</button></span></li>`).join('')}</ul>`
         : '<p>No breeding events recorded yet.</p>') + past +
         `<button type="button" class="brd-do mt-2 rounded-lg bg-sky-700 text-white font-semibold px-3 py-1.5" data-cow="${esc(id)}" data-type="Service">Record an event</button>`;
     }
@@ -369,15 +382,30 @@
       if (keepS) sire.value = keepS;
     }
 
-    function openForm(type, cowId, preset = {}) {
+    function openForm(type, cowId, preset = {}, ev = null) {
+      editing = ev;
       show($('#brd-form'), true);
       show($('#brd-main'), false);
       $('#brd-type').value = type || 'Service';
       if (cowId) $('#brd-cow').value = cowId;
+      $('#brd-type').disabled = !!ev;
+      $('#brd-cow').disabled = !!ev;
       $('#brd-date').value = preset.date || todayLocal();
-      ['#brd-sirecode', '#brd-tech', '#brd-cost', '#brd-calfweight', '#brd-calfname', '#brd-notes'].forEach((s) => { $(s).value = ''; });
+      ['#brd-sirecode', '#brd-tech', '#brd-cost', '#brd-calfweight', '#brd-calfname', '#brd-notes', '#brd-reason'].forEach((s) => { $(s).value = ''; });
       $('#brd-sire').value = '';
       delete $('#brd-calfname').dataset.touched;
+      if (ev) {
+        $('#brd-method').value = ev.method || 'AI';
+        $('#brd-sire').value = ev.sireId || '';
+        $('#brd-sirecode').value = ev.sireCode || '';
+        $('#brd-semen').value = ev.semenType || '';
+        $('#brd-tech').value = ev.technician || '';
+        if (ev.result) $('#brd-result').value = ev.result;
+        if (ev.calvingEase) $('#brd-ease').value = ev.calvingEase;
+        $('#brd-calfweight').value = ev.calfWeightKg || '';
+        $('#brd-notes').value = ev.notes || '';
+      }
+      $('#brd-title').textContent = ev ? `Correct ${ev.eventType.toLowerCase()} · ${nameOf(ev.animalId)}` : '';
       if (preset.sireCode) $('#brd-sirecode').value = preset.sireCode;
       if (preset.technician) $('#brd-tech').value = preset.technician;
       pendingExpenseId = preset.expenseId || '';
@@ -385,7 +413,7 @@
       updateForm();
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
-    function closeForm() { show($('#brd-form'), false); show($('#brd-main'), true); pendingExpenseId = ''; render(); }
+    function closeForm() { editing = null; $('#brd-type').disabled = false; $('#brd-cow').disabled = false; show($('#brd-form'), false); show($('#brd-main'), true); pendingExpenseId = ''; render(); }
     function setError(m) { const el = $('#brd-error'); el.textContent = m || ''; show(el, !!m); }
 
     function updateForm() {
@@ -393,14 +421,17 @@
       const ai = $('#brd-method').value === 'AI';
       show($('#brd-service'), t === 'Service');
       show($('#brd-semen-wrap'), t === 'Service' && ai);
-      show($('#brd-cost-wrap'), t === 'Service' && !pendingExpenseId);
+      show($('#brd-cost-wrap'), t === 'Service' && !pendingExpenseId && !editing);
+      show($('#brd-reason-wrap'), !!editing);
+      show($('#brd-calf-wrap'), t === 'Calving' && $('#brd-outcome').value === 'Alive' && !editing);
+      $('#brd-outcome').disabled = !!editing; $('#brd-calfsex').disabled = !!editing;
       show($('#brd-linked'), t === 'Service' && !!pendingExpenseId);
       show($('#brd-sirecode-wrap'), t === 'Service' && !$('#brd-sire').value);
       show($('#brd-tech-wrap'), t === 'Service' || t === 'Pregnancy check');
       $('#brd-tech-label').textContent = t === 'Pregnancy check' ? 'Checked by (vet)' : ai ? 'Inseminator' : 'Bull owner (optional)';
       show($('#brd-pd'), t === 'Pregnancy check');
       show($('#brd-calving'), t === 'Calving');
-      show($('#brd-calf-wrap'), t === 'Calving' && $('#brd-outcome').value === 'Alive');
+
       const cow = $('#brd-cow').value;
       if (t === 'Calving' && !$('#brd-calfname').dataset.touched) $('#brd-calfname').placeholder = `e.g. ${nameOf(cow)}'s calf`;
       // For calvings entered from the past: her calves already in the herd list can be chosen instead of adding a new one.
@@ -424,10 +455,103 @@
       $('#brd-effect').textContent = what;
     }
 
+    /** Correct an event: on the phone if not uploaded, else a queued correction. */
+    async function saveEdit() {
+      const ev = editing;
+      const t = ev.eventType;
+      const f = { date: $('#brd-date').value, notes: $('#brd-notes').value.trim().slice(0, 300) };
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(f.date) || f.date > todayLocal()) throw new Error('Pick the date (not in the future).');
+      if (t === 'Service') {
+        f.method = $('#brd-method').value; f.sireId = $('#brd-sire').value; f.sireCode = f.sireId ? '' : $('#brd-sirecode').value.trim().slice(0, 60);
+        f.semenType = f.method === 'AI' ? $('#brd-semen').value : ''; f.technician = $('#brd-tech').value.trim().slice(0, 60);
+      } else if (t === 'Pregnancy check') { f.result = $('#brd-result').value; f.technician = $('#brd-tech').value.trim().slice(0, 60); }
+      else if (t === 'Calving') {
+        f.calvingEase = $('#brd-ease').value;
+        const w = $('#brd-calfweight').value.trim();
+        f.calfWeightKg = w === '' ? '' : num(w);
+        if (f.calfWeightKg !== '' && !(f.calfWeightKg >= 5 && f.calfWeightKg <= 80)) throw new Error('Calf weight should be 5–80 kg (or blank).');
+      }
+      const changes = {};
+      Object.keys(f).forEach((k) => { if (EDITABLE.includes(k) && String(f[k] ?? '') !== String(ev[k] ?? '')) changes[k] = f[k]; });
+      if (!Object.keys(changes).length) throw new Error('Nothing was changed.');
+      const mine = local.find((x) => x.clientId === ev.clientId);
+      if (mine && mine.syncStatus !== SYNC_STATUS.SYNCED) {
+        await db[STORE].update(mine.id, { ...changes, updatedAt: new Date().toISOString() });
+        toast('Changed on this phone (not uploaded yet)');
+      } else {
+        const reason = $('#brd-reason').value.trim();
+        if (!reason) throw new Error('Give a short reason for the correction.');
+        await queueCorrection({ sheet: SHEET, id: ev.eventId, changes, reason });
+        await mirror(ev, changes);
+        toast('Correction saved: uploads with the next sync');
+      }
+      await reconcileHerd(ev.animalId);
+    }
+
+    /** Show a correction straight away: change the phone's copy (or the cached server copy). */
+    async function mirror(ev, changes) {
+      const mine = local.find((x) => x.clientId === ev.clientId);
+      if (mine) await db[STORE].update(mine.id, changes);
+      if (server && server.events) {
+        server.events = server.events.map((x) => (x.clientId === ev.clientId ? { ...x, ...changes } : x));
+        await db.kv.put({ key: 'breedingList', value: server });
+      }
+      local = await db[STORE].toArray();
+      render();
+    }
+
+    async function cancelEvent(clientId) {
+      const ev = allEvents().find((x) => x.clientId === clientId);
+      if (!ev) return;
+      const mine = local.find((x) => x.clientId === clientId);
+      const calfNote = ev.calfId ? `\n\nThe calf ${nameOf(ev.calfId)} (${ev.calfId}) stays in the herd list: remove it in Animals if it was a mistake.` : '';
+      if (mine && mine.syncStatus !== SYNC_STATUS.SYNCED) {
+        if (!confirm(`Delete this ${ev.eventType.toLowerCase()} for ${nameOf(ev.animalId)}? It has not been uploaded yet.${calfNote}`)) return;
+        await db[STORE].delete(mine.id);
+        local = await db[STORE].toArray();
+        toast('Deleted', 'info');
+      } else {
+        const reason = prompt(`Cancel this ${ev.eventType.toLowerCase()} for ${nameOf(ev.animalId)} (${fmt(ev.date)})? It stays in the sheet marked Void.${calfNote}\n\nReason:`);
+        if (reason === null) return;
+        if (!reason.trim()) { toast('A reason is needed to cancel', 'error'); return; }
+        await queueCorrection({ sheet: SHEET, id: ev.eventId, changes: {}, void: true, reason: reason.trim().slice(0, 300) });
+        await mirror(ev, { voided: true });
+        toast('Cancelled: uploads with the next sync', 'info');
+      }
+      await reconcileHerd(ev.animalId);
+    }
+
+    /**
+     * After a correction, bring the cow's herd record in line with her events:
+     * confirmed in calf → In-calf (with the sire); served / open / fresh → Open;
+     * dried off and still in calf → Dry; calved since the last dry-off → Lactating.
+     * A cow In-calf in the register with no events is left alone.
+     */
+    async function reconcileHerd(cowId) {
+      const cow = animals.find((a) => a.animalId === cowId);
+      if (!cow) return;
+      const c = model().cows.find((x) => x.animalId === cowId);
+      if (!c || c.status === 'In calf (date unknown)') return;
+      const patch = {};
+      const inCalf = c.expectedIsConfirmed;
+      if (inCalf && cow.pregnancyStatus !== 'In-calf') { patch.pregnancyStatus = 'In-calf'; patch.pregnancySireId = /^(MT|X)-/.test(c.conceptionSireId) ? c.conceptionSireId : ''; }
+      if (!inCalf && cow.pregnancyStatus === 'In-calf') { patch.pregnancyStatus = 'Open'; patch.pregnancySireId = ''; }
+      if (inCalf && c.dryOffDone && cow.milkingStatus !== 'Dry') patch.milkingStatus = 'Dry';
+      if (!c.dryOffDone && c.lastCalving && cow.milkingStatus === 'Dry' && allEvents().some((e) => e.animalId === cowId && e.eventType === 'Calving')) patch.milkingStatus = 'Lactating';
+      if (!Object.keys(patch).length) return;
+      try { await herd.updateAnimal(cowId, patch); toast(`${cow.name}: herd list updated`, 'info'); } catch (err) { toast('Herd list not updated: ' + (err.message || err), 'error'); }
+    }
+
     async function handleSubmit(e) {
       e.preventDefault();
       setError('');
       if (!getSession()) { toast('Sign in first', 'error'); return; }
+      if (editing) {
+        const b = $('#brd-form button[type="submit"]');
+        b.disabled = true;
+        try { await saveEdit(); closeForm(); } catch (err) { setError(err.message || String(err)); } finally { b.disabled = false; }
+        return;
+      }
       const t = $('#brd-type').value;
       const cowId = $('#brd-cow').value;
       const date = $('#brd-date').value;
@@ -547,6 +671,10 @@
       $('#breed-view').addEventListener('click', (e) => {
         const d = e.target.closest('.brd-do');
         if (d) { openForm(d.dataset.type, d.dataset.cow); return; }
+        const ed = e.target.closest('.brd-edit');
+        if (ed) { const ev = allEvents().find((x) => x.clientId === ed.dataset.id); if (ev) { openForm(ev.eventType, ev.animalId, { date: ev.date }, ev); } return; }
+        const cx = e.target.closest('.brd-cancel-ev');
+        if (cx) { cancelEvent(cx.dataset.id); return; }
         const a = e.target.closest('.brd-ai-use');
         if (a) {
           const x = ((server && server.unmatchedAi) || []).find((y) => y.expenseId === a.dataset.id);

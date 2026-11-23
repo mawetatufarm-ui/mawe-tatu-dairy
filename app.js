@@ -98,13 +98,17 @@
   const FODDER_FEEDOUT = 'fodder_feedout';
   // v5.6 (breeding.js): heats, services, pregnancy checks, dry-off, calvings.
   const BREEDING = 'breeding_events';
+  // v5.7 (health.js): treatments, vaccinations, deworming, spraying, checks.
+  const HEALTH = 'health_events';
+  // v5.7: corrections and cancellations of uploaded breeding / health records (→ Corrections.gs).
+  const CORRECTIONS = 'corrections';
 
   // Append-only stores, in upload order: prices before sales, sales before the
   // payments and returns that refer to them.
-  const APPEND_STORES = Object.freeze([SALES.PRICES, STORES.MILK, STORES.CALF, SALES.SALES, SALES.PAYMENTS, SALES.RETURNS, EXPENSES, EXPENSE_PAYMENTS, FEED_BATCHES, FODDER_BATCHES, FODDER_FEEDOUT, BREEDING]);
+  const APPEND_STORES = Object.freeze([SALES.PRICES, STORES.MILK, STORES.CALF, SALES.SALES, SALES.PAYMENTS, SALES.RETURNS, EXPENSES, EXPENSE_PAYMENTS, FEED_BATCHES, FODDER_BATCHES, FODDER_FEEDOUT, BREEDING, HEALTH]);
   // Synced rows of these are removed from the phone after 30 days (prices are
   // kept: the sheet's list replaces them on every download).
-  const PRUNE_STORES = Object.freeze([STORES.MILK, STORES.CALF, SALES.SALES, SALES.PAYMENTS, SALES.RETURNS, EXPENSES, EXPENSE_PAYMENTS, FEED_BATCHES, EXPENSE_EDITS, FODDER_FEEDOUT]);
+  const PRUNE_STORES = Object.freeze([STORES.MILK, STORES.CALF, SALES.SALES, SALES.PAYMENTS, SALES.RETURNS, EXPENSES, EXPENSE_PAYMENTS, FEED_BATCHES, EXPENSE_EDITS, FODDER_FEEDOUT, CORRECTIONS]);
 
   // pending -> (upload) -> synced
   // pending -> (server rejected the record) -> failed -> retried each run
@@ -128,6 +132,7 @@
     [FODDER_BATCHES]: 'Fodder_Batches',
     [FODDER_FEEDOUT]: 'Fodder_Feedout',
     [BREEDING]: 'Breeding_Events',
+    [HEALTH]: 'Health_Events',
   });
 
   // Exactly which fields are sent to the server for each store.
@@ -144,6 +149,7 @@
     ...((window.MaweExpenseList && window.MaweExpenseList.PAYLOAD) || {}),
     ...((window.MaweFodder && window.MaweFodder.PAYLOAD) || {}),
     ...((window.MaweBreeding && window.MaweBreeding.PAYLOAD) || {}),
+    ...((window.MaweHealth && window.MaweHealth.PAYLOAD) || {}),
   });
 
   // The three daily milkings at Mawe Tatu: ~5:00 am, ~1:00 pm, ~8:30 pm.
@@ -179,7 +185,7 @@
    *   herd, status, category  list filters and dropdowns
    *   damId                   offspring lookups
    * Existing milk and calf rows are untouched by the upgrades. Never edit
-   * an old version block; add db.version(9) for the next schema change.
+   * an old version block; add db.version(10) for the next schema change.
    * ------------------------------------------------------------------ */
 
   const db = new Dexie(DB_NAME);
@@ -237,6 +243,13 @@
     [BREEDING]: '++id, &clientId, syncStatus, date, animalId, eventId, createdAt',
   });
 
+  /* Version 9 (animal health — health.js; corrections of uploaded breeding / health
+   * records). Health events are never pruned; corrections are pruned 30 days after upload. */
+  db.version(9).stores({
+    [HEALTH]: '++id, &clientId, syncStatus, date, animalId, eventId, createdAt',
+    [CORRECTIONS]: '++id, &clientId, syncStatus, sheet, recordId, createdAt',
+  });
+
   /** The herd register module (herd.js). Created in init() once the DB is open. */
   let herd = null;
   /** The sales module (sales.js). Created in init(). */
@@ -249,6 +262,8 @@
   let fodder = null;
   /** The breeding module (breeding.js). Created in init(), after herd and expenses. */
   let breeding = null;
+  /** The health module (health.js). Created in init(). */
+  let health = null;
 
   /* ------------------------------------------------------------------
    * 4. UTILITY HELPERS
@@ -386,7 +401,8 @@
     const statuses = [SYNC_STATUS.PENDING, SYNC_STATUS.FAILED];
     const counts = await Promise.all([ANIMALS, SALES.CUSTOMERS].concat(APPEND_STORES)
       .map((name) => db[name].where('syncStatus').anyOf(statuses).count()));
-    const extras = expenses ? await expenses.countPendingExtras() : 0; // corrections + receipts
+    const extras = (expenses ? await expenses.countPendingExtras() : 0) // expense corrections + receipts
+      + await db[CORRECTIONS].where('syncStatus').anyOf(statuses).count(); // breeding / health corrections
     return counts.reduce((t, n) => t + n, 0) + extras;
   }
 
@@ -1253,6 +1269,7 @@
             if (expenses) await expenses.refreshPrices(false);
             if (fodder) await fodder.refresh(false);
             if (breeding) await breeding.refresh(false);
+            if (health) await health.refresh(false);
           }
           return totals;
         });
@@ -1310,6 +1327,46 @@
     }
   }
 
+  /* ------------------------------------------------------------------
+   * Corrections of uploaded breeding / health records (v5.7)
+   * ------------------------------------------------------------------ */
+
+  /** Save a correction on the phone; it uploads with the next sync (correctRecords). */
+  async function queueCorrection({ sheet, id, changes, void: isVoid = false, reason = '' }) {
+    const now = new Date().toISOString();
+    await db[CORRECTIONS].add({
+      clientId: makeUUID(), deviceId: getDeviceId(), sheet, recordId: id, changes: changes || {}, void: !!isVoid, reason,
+      updatedBy: session ? session.email : '', createdAt: now, updatedAt: now,
+      syncStatus: SYNC_STATUS.PENDING, syncAttempts: 0, lastError: null, syncedAt: null,
+    });
+    requestSync('new-record', SYNC_CONFIG.SAVE_DEBOUNCE_MS);
+  }
+
+  /** Upload pending corrections, oldest first. A refused one is kept with its reason and shown in a toast. */
+  async function syncCorrections() {
+    const totals = { uploaded: 0, rejected: 0 };
+    const pending = await db[CORRECTIONS].where('syncStatus').anyOf([SYNC_STATUS.PENDING, SYNC_STATUS.FAILED]).sortBy('createdAt');
+    const todo = pending.filter((c) => (c.syncAttempts || 0) < 5 || c.syncStatus === SYNC_STATUS.PENDING);
+    if (!todo.length) return totals;
+    const reply = await callServer({ action: 'correctRecords', records: todo.map((c) => ({ clientId: c.clientId, sheet: c.sheet, id: c.recordId, changes: c.changes,
+      void: c.void, reason: c.reason, updatedBy: c.updatedBy, deviceId: c.deviceId, updatedAt: c.createdAt })) });
+    if (!Array.isArray(reply.results)) throw new SyncError('Apps Script reply is missing the results list', 'server');
+    const now = new Date().toISOString();
+    for (const c of todo) {
+      const res = reply.results.find((r) => r.clientId === c.clientId);
+      if (!res) continue;
+      if (res.status === 'saved' || res.status === 'duplicate') {
+        await db[CORRECTIONS].update(c.id, { syncStatus: SYNC_STATUS.SYNCED, syncedAt: now, lastError: null });
+        totals.uploaded++;
+      } else {
+        await db[CORRECTIONS].update(c.id, { syncStatus: SYNC_STATUS.FAILED, lastError: res.error || 'rejected', syncAttempts: (c.syncAttempts || 0) + 1 });
+        totals.rejected++;
+        toast(`Correction to ${c.recordId} refused: ${res.error}`, 'error');
+      }
+    }
+    return totals;
+  }
+
   async function syncAllStores() {
     // 1. Animals and customers first, so a cow or customer added offline
     //    exists before the entries that refer to them.
@@ -1332,6 +1389,10 @@
       totals.uploaded += x.uploaded;
       totals.rejected += x.rejected;
     }
+    // 4. Corrections and cancellations of breeding / health records.
+    const c = await syncCorrections();
+    totals.uploaded += c.uploaded;
+    totals.rejected += c.rejected;
     return totals;
   }
 
@@ -1561,9 +1622,9 @@
         err.code = data.code;
         throw err;
       }
-      // An old Code.gs does not know the herd actions yet.
-      if (/^Unknown action/.test(String(data.message || ''))) {
-        throw new SyncError('Code.gs needs updating: paste the new version and redeploy', 'server');
+      // The Apps Script project is older than this app: a script file is missing or it was not redeployed.
+      if (/^Unknown (action|sheet)/.test(String(data.message || ''))) {
+        throw new SyncError('Apps Script needs updating: add the missing script files, then Deploy → Manage deployments → ✏️ → New version (' + String(data.message) + ')', 'server');
       }
       throw new SyncError(data.message || 'Apps Script reported an error', 'server');
     }
@@ -1591,6 +1652,7 @@
         else if (storeName === EXPENSE_PAYMENTS && expenses) await expenses.applyPaymentRename(rec, res.renamed);
         else if (storeName === FODDER_BATCHES && fodder) await fodder.applyRename(storeName, rec, res.renamed);
         else if (storeName === BREEDING && breeding) await breeding.applyRename(storeName, rec, res.renamed);
+        else if (storeName === HEALTH && health) await health.applyRename(storeName, rec, res.renamed);
         else if (sales) await sales.applyRename(storeName, rec, res.renamed);
       }
     }
@@ -1735,6 +1797,7 @@
    * ------------------------------------------------------------------ */
   window.FarmDB = Object.freeze({
     get breeding() { return breeding; },
+    get health() { return health; },
     db, STORES, SYNC_STATUS, SHEET_FOR_STORE, MILK_SESSIONS, FEED_TYPES,
     addMilkLog, addCalfLog, getPending, countPending,
     markSynced, markFailed, deleteUnsynced,
@@ -1851,11 +1914,22 @@
     if (window.MaweBreeding && herd) {
       breeding = window.MaweBreeding.create({
         db, SYNC_STATUS, getSession: () => session, getDeviceId, makeUUID, todayLocal, esc, toast, requestSync,
-        saveDebounceMs: SYNC_CONFIG.SAVE_DEBOUNCE_MS, callServer, herd, expenses,
+        saveDebounceMs: SYNC_CONFIG.SAVE_DEBOUNCE_MS, callServer, herd, expenses, queueCorrection,
       });
       breeding.init();
     } else {
       console.warn('breeding.js did not load: the Breeding view is unavailable.');
+    }
+
+    // Health view in the Herd tab (health.js): treatments and milk withdrawal (banners on Milk and Sales).
+    if (window.MaweHealth) {
+      health = window.MaweHealth.create({
+        db, SYNC_STATUS, getSession: () => session, getDeviceId, makeUUID, todayLocal, esc, toast, requestSync,
+        saveDebounceMs: SYNC_CONFIG.SAVE_DEBOUNCE_MS, callServer, expenses, queueCorrection,
+      });
+      health.init();
+    } else {
+      console.warn('health.js did not load: the Health view is unavailable.');
     }
 
     // Reports tab (reports.js): customer sales, milk output and expenses for chosen dates.

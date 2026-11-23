@@ -189,6 +189,8 @@
 
     <!-- ===================== PANEL 1: MILK LOGGER ===================== -->
     <section id="panel-milk" role="tabpanel" aria-labelledby="tab-milk" class="panel-enter">
+      <!-- health.js: cows whose milk must not be sold (withdrawal after treatment) -->
+      <p id="hl-milk-banner" class="hidden mb-3 rounded-xl bg-red-50 border border-red-200 text-red-800 text-sm px-4 py-3" role="alert"></p>
       <form id="milk-form" class="bg-white rounded-2xl shadow-sm p-5 space-y-4" novalidate autocomplete="off">
         <h2 class="text-base font-bold text-farm-800">Record milk yield</h2>
 
@@ -200,6 +202,7 @@
                   class="w-full rounded-xl border border-slate-300 px-4 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-farm-500">
             <option value="">Loading herd…</option>
           </select>
+          <p id="hl-milk-cow" class="hidden mt-2 rounded-lg bg-red-100 text-red-800 text-sm font-semibold px-3 py-2" role="alert"></p>
         </div>
 
         <div class="grid grid-cols-2 gap-3">
@@ -300,9 +303,10 @@
     <!-- Driven by herd.js. Two views: the list (#herd-list-view) and the
          add / edit form (#herd-form); only one is visible at a time. -->
     <section id="panel-herd" role="tabpanel" aria-labelledby="tab-herd" class="hidden panel-enter">
-      <div class="grid grid-cols-2 gap-2 mb-4" role="group" aria-label="Herd view">
+      <div class="grid grid-cols-3 gap-2 mb-4" role="group" aria-label="Herd view">
         <button type="button" class="herd-view-btn rounded-xl py-2.5 text-sm font-bold shadow-sm bg-sky-700 text-white" data-view="animals" aria-pressed="true">Animals</button>
         <button type="button" class="herd-view-btn rounded-xl py-2.5 text-sm font-bold shadow-sm bg-white text-sky-800" data-view="breeding" aria-pressed="false">Breeding</button>
+        <button type="button" class="herd-view-btn rounded-xl py-2.5 text-sm font-bold shadow-sm bg-white text-sky-800" data-view="health" aria-pressed="false">Health</button>
       </div>
       <div id="herd-animals">
 
@@ -504,6 +508,7 @@
         <form id="brd-form" class="hidden bg-white rounded-2xl shadow-sm p-5 space-y-4" novalidate autocomplete="off">
           <div class="flex items-center justify-between gap-2">
             <button id="brd-cancel" type="button" class="text-sm font-semibold text-sky-700">‹ Breeding</button>
+            <h2 id="brd-title" class="text-sm font-bold text-sky-900 empty:hidden"></h2>
           </div>
           <div class="grid grid-cols-2 gap-3">
             <div><label for="brd-type" class="hf-label">Event</label>
@@ -543,9 +548,83 @@
             </div>
           </div>
           <input id="brd-notes" type="text" maxlength="300" class="hf-input" placeholder="Notes (optional, e.g. heat signs)" aria-label="Notes" />
+          <div id="brd-reason-wrap" class="hidden"><label for="brd-reason" class="hf-label">Reason for the correction (needed once uploaded)</label>
+            <input id="brd-reason" type="text" maxlength="300" class="hf-input" placeholder="e.g. wrong semen code" /></div>
           <p id="brd-effect" class="text-xs text-sky-900 bg-sky-50 rounded-lg px-3 py-2 empty:hidden"></p>
           <p id="brd-error" class="hidden text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2" role="alert"></p>
           <button type="submit" class="w-full rounded-xl bg-sky-700 hover:bg-sky-800 active:scale-[.98] text-white font-bold py-3.5 text-base shadow transition">Save</button>
+        </form>
+      </div>
+          <!-- ---------- Health (health.js) ---------- -->
+      <div id="health-view" class="hidden space-y-4">
+        <div id="hl-main" class="space-y-4">
+          <div class="flex items-center justify-between gap-2">
+            <h3 class="text-sm font-semibold text-slate-500 uppercase tracking-wide px-1">Milk withheld today</h3>
+            <button type="button" id="hl-refresh" class="text-xs font-semibold text-teal-700 underline shrink-0">Update</button>
+          </div>
+          <ul id="hl-withheld" class="space-y-2 -mt-2"></ul>
+          <button id="hl-add" type="button" class="w-full rounded-xl bg-teal-700 hover:bg-teal-800 text-white font-bold py-3 shadow">+ Record treatment, vaccination, deworming…</button>
+          <div>
+            <h3 class="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-2 px-1">Due in the next 3 weeks</h3>
+            <ul id="hl-due" class="space-y-2"></ul>
+          </div>
+          <div>
+            <h3 class="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-2 px-1">Animals</h3>
+            <ul id="hl-animals" class="space-y-2"></ul>
+          </div>
+        </div>
+
+        <form id="hl-form" class="hidden bg-white rounded-2xl shadow-sm p-5 space-y-4" novalidate autocomplete="off">
+          <div class="flex items-center justify-between gap-2">
+            <button id="hl-cancel-form" type="button" class="text-sm font-semibold text-teal-700">‹ Health</button>
+            <h2 id="hl-title" class="text-sm font-bold text-teal-900"></h2>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div><label for="hl-type" class="hf-label">What</label>
+              <select id="hl-type" class="hf-input"><option>Treatment</option><option>Vaccination</option><option>Deworming</option><option>Spraying / dipping</option>
+                <option>Mastitis check (CMT)</option><option>Vet visit</option><option>Other</option></select></div>
+            <div><label for="hl-date" class="hf-label">Date (first day)</label><input id="hl-date" type="date" class="hf-input" /></div>
+          </div>
+          <div><label for="hl-animal" class="hf-label">Animal</label><select id="hl-animal" class="hf-input"></select></div>
+          <div id="hl-condition-wrap"><label for="hl-condition" class="hf-label">Problem / diagnosis</label>
+            <input id="hl-condition" type="text" maxlength="80" list="hl-condition-list" class="hf-input" placeholder="e.g. Mastitis" /><datalist id="hl-condition-list"></datalist></div>
+          <div id="hl-drug-wrap" class="grid grid-cols-2 gap-3">
+            <div><label id="hl-drug-label" for="hl-drug" class="hf-label">Drug</label><input id="hl-drug" type="text" maxlength="80" list="hl-drug-list" class="hf-input" /><datalist id="hl-drug-list"></datalist></div>
+            <div><label for="hl-dose" class="hf-label">Dose (optional)</label><input id="hl-dose" type="text" maxlength="80" class="hf-input" placeholder="e.g. 20 ml" /></div>
+            <p id="hl-drug-hint" class="col-span-2 -mt-2 text-xs text-slate-500 empty:hidden"></p>
+          </div>
+          <div id="hl-quarters-wrap"><span class="hf-label">Quarters (udder treatments)</span>
+            <div class="flex gap-4 text-sm"><label><input type="checkbox" class="hl-q" value="FL" /> FL</label><label><input type="checkbox" class="hl-q" value="FR" /> FR</label>
+              <label><input type="checkbox" class="hl-q" value="RL" /> RL</label><label><input type="checkbox" class="hl-q" value="RR" /> RR</label></div></div>
+          <div id="hl-cmt-wrap" class="hidden"><span class="hf-label">CMT result per quarter</span>
+            <div class="grid grid-cols-4 gap-2">
+              <label class="text-xs">FL<select class="hl-cmt hf-input" data-q="FL"><option>Neg</option><option>T</option><option>1</option><option>2</option><option>3</option></select></label>
+              <label class="text-xs">FR<select class="hl-cmt hf-input" data-q="FR"><option>Neg</option><option>T</option><option>1</option><option>2</option><option>3</option></select></label>
+              <label class="text-xs">RL<select class="hl-cmt hf-input" data-q="RL"><option>Neg</option><option>T</option><option>1</option><option>2</option><option>3</option></select></label>
+              <label class="text-xs">RR<select class="hl-cmt hf-input" data-q="RR"><option>Neg</option><option>T</option><option>1</option><option>2</option><option>3</option></select></label>
+            </div><p class="mt-1 text-xs text-slate-500">Neg = clear, T = trace, 1–3 = increasingly thick gel.</p></div>
+          <div id="hl-withdrawal" class="grid grid-cols-3 gap-2 rounded-xl bg-red-50/60 p-3">
+            <div><label for="hl-course" class="hf-label">Course (days)</label><input id="hl-course" type="number" min="1" max="30" step="1" inputmode="numeric" class="hf-input" /></div>
+            <div><label for="hl-milkdays" class="hf-label">Milk withdrawal (days)</label><input id="hl-milkdays" type="number" min="0" max="120" step="1" inputmode="numeric" class="hf-input" /></div>
+            <div><label for="hl-meatdays" class="hf-label">Meat withdrawal (days)</label><input id="hl-meatdays" type="number" min="0" max="120" step="1" inputmode="numeric" class="hf-input" /></div>
+            <p class="col-span-3 text-xs text-slate-600">From the label. Hours ÷ 24, rounded up (72 h = 3, 96 h = 4).</p>
+          </div>
+          <p id="hl-effect" class="text-xs text-red-800 font-semibold empty:hidden"></p>
+          <div class="grid grid-cols-2 gap-3">
+            <div><label for="hl-by" class="hf-label">Done by</label><input id="hl-by" type="text" maxlength="80" list="hl-by-list" class="hf-input" placeholder="e.g. Dr Wafula" /><datalist id="hl-by-list"></datalist></div>
+            <div><label id="hl-next-label" for="hl-next" class="hf-label">Next due</label><input id="hl-next" type="date" class="hf-input" /></div>
+            <p id="hl-next-hint" class="col-span-2 -mt-2 text-xs text-slate-500 empty:hidden"></p>
+          </div>
+          <div id="hl-cost-wrap" class="grid grid-cols-2 gap-3">
+            <div><label for="hl-cost" class="hf-label">Cost (KES, optional)</label><input id="hl-cost" type="number" min="0" step="1" inputmode="decimal" class="hf-input" /></div>
+            <div><label for="hl-costmethod" class="hf-label">Paid by</label><select id="hl-costmethod" class="hf-input"><option>Cash</option><option>M-Pesa</option><option>Bank</option><option>Other</option></select></div>
+            <p class="col-span-2 -mt-2 text-xs text-slate-500">Saved in Expenses (Animal health) for this animal.</p>
+          </div>
+          <input id="hl-notes" type="text" maxlength="300" class="hf-input" placeholder="Notes (optional)" aria-label="Notes" />
+          <div id="hl-reason-wrap" class="hidden"><label for="hl-reason" class="hf-label">Reason for the correction (needed once uploaded)</label>
+            <input id="hl-reason" type="text" maxlength="300" class="hf-input" placeholder="e.g. label says 96 hours" /></div>
+          <p id="hl-error" class="hidden text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2" role="alert"></p>
+          <button type="submit" class="w-full rounded-xl bg-teal-700 hover:bg-teal-800 active:scale-[.98] text-white font-bold py-3.5 text-base shadow transition">Save</button>
         </form>
       </div>
     </section>
@@ -553,6 +632,7 @@
     <!-- ===================== PANEL 4: SALES ===================== -->
     <!-- Driven by sales.js. Four views: Sale, Payment, Return, Customers. -->
     <section id="panel-sales" role="tabpanel" aria-labelledby="tab-sales" class="hidden panel-enter">
+      <p id="hl-sales-banner" class="hidden mb-3 rounded-xl bg-red-50 border border-red-200 text-red-800 text-sm px-4 py-3" role="alert"></p>
       <nav class="grid grid-cols-4 gap-1 bg-white p-1 rounded-xl shadow-sm mb-3 text-xs font-semibold" role="tablist" aria-label="Sales">
         <button type="button" class="sales-view-btn py-2 rounded-lg" data-view="sale">Sale</button>
         <button type="button" class="sales-view-btn py-2 rounded-lg" data-view="payment">Payment</button>
@@ -1270,6 +1350,7 @@
   <script src="expense-list.js" defer></script>
   <script src="fodder.js" defer></script>
   <script src="breeding.js" defer></script>
+  <script src="health.js" defer></script>
   <script src="reports.js" defer></script>
   <script src="app.js" defer></script>
 </body>
