@@ -20,6 +20,17 @@
  *        test, smell & colour, temperature → Milk_Quality.
  *      • the daily balance for the last 7 days from the sheet (listMilkUse).
  *      • recent entries: delete before upload; cancel after (a correction).
+ * 3. EDIT A MILKING (v5.8.2): the Edit button on each entry under the milk
+ *    form opens #mk-edit (cow, milking, litres, date).
+ *      • not yet uploaded → the entry on the phone is simply changed;
+ *        "Cancel this milking" deletes it;
+ *      • already uploaded → the phone's copy is changed at once (so the
+ *        summary is right) and a correction is queued for the sheet
+ *        (Corrections.gs, sheet Milk_Production, id = the entry's clientId),
+ *        with a reason logged in Record_Changes. Cancel = Status Void: the
+ *        row stays in the sheet but no report counts it.
+ *      • warns if the change makes a second entry for the same cow, day and
+ *        milking (both would be added together).
  *
  * Stores (Dexie v10 in app.js): `milk_use`, `milk_quality` (append, pruned
  * 30 days after upload). kv 'milkUseList' caches listMilkUse.
@@ -41,7 +52,7 @@
   const DROP = 0.2;              // flag a cow whose 7-day average fell by 20%+
 
   function create(deps) {
-    const { db, SYNC_STATUS, getSession, getDeviceId, makeUUID, todayLocal, esc, toast, requestSync, saveDebounceMs, callServer, queueCorrection, getHealth } = deps;
+    const { db, SYNC_STATUS, getSession, getDeviceId, makeUUID, todayLocal, esc, toast, requestSync, saveDebounceMs, callServer, queueCorrection, getHealth, isMilkInFlight } = deps;
     const $ = (s) => document.querySelector(s);
     const $$ = (s) => [...document.querySelectorAll(s)];
     const show = (el, v) => el && el.classList.toggle('hidden', !v);
@@ -303,6 +314,108 @@
       await db[storeName].update(rec.id, storeName === USE ? { useId: renamed.value } : { checkId: renamed.value });
     }
 
+    /* ================= edit a milking (v5.8.2) ================= */
+
+    const SESSION_NAMES = ['Morning', 'Afternoon', 'Evening'];
+    let editing = null; // the milk_logs record being edited
+
+    function editValues() {
+      return { cowId: $('#mk-edit-cow').value, session: $('#mk-edit-session').value, litres: num($('#mk-edit-litres').value), date: $('#mk-edit-date').value };
+    }
+    /** Another (not cancelled) entry on this phone for the same cow, day and milking. */
+    function clash(v) {
+      return milk.find((m) => m.id !== editing.id && m.cowId === v.cowId && m.date === v.date && m.session === v.session);
+    }
+    function updateEditWarn() {
+      if (!editing) return;
+      const c = clash(editValues());
+      const w = $('#mk-edit-warn');
+      w.innerHTML = c ? `${esc(nameOf(c.cowId))} already has a ${esc(c.session)} entry on ${esc(fmt(c.date))} (${L(c.litres)}). Saving gives two entries that are added together; if one is a mistake, cancel it instead.` : '';
+      show(w, !!c);
+    }
+
+    async function openEdit(id) {
+      const rec = await db.milk_logs.get(id);
+      if (!rec || rec.voided) { toast('That entry is no longer here', 'error'); return; }
+      editing = rec;
+      const synced = rec.syncStatus === SYNC_STATUS.SYNCED;
+      // Cows: the same list as the milk form, plus this entry's cow if she is no longer in it.
+      const sel = $('#mk-edit-cow');
+      const src = document.querySelector('#milk-cowId');
+      sel.innerHTML = src ? src.innerHTML : '';
+      [...sel.options].forEach((o) => { if (!o.value) o.remove(); });
+      if (![...sel.options].some((o) => o.value === rec.cowId)) sel.insertAdjacentHTML('afterbegin', `<option value="${esc(rec.cowId)}">${esc(rec.cowName || rec.cowId)} (${esc(rec.cowId)})</option>`);
+      sel.value = rec.cowId;
+      $('#mk-edit-session').value = SESSION_NAMES.includes(rec.session) ? rec.session : 'Morning';
+      $('#mk-edit-litres').value = rec.litres;
+      $('#mk-edit-date').value = rec.date;
+      $('#mk-edit-date').max = todayLocal();
+      $('#mk-edit-reason').value = '';
+      show($('#mk-edit-reason-wrap'), synced);
+      $('#mk-edit-info').textContent = synced
+        ? 'Already in Google Sheets: the sheet is corrected with the next sync, and the change is logged with your reason.'
+        : 'Not uploaded yet: the entry on this phone is changed.';
+      $('#mk-edit-void').textContent = synced ? 'Cancel this milking' : 'Delete this entry';
+      setError('#mk-edit-error', '');
+      updateEditWarn();
+      show($('#mk-edit'), true);
+      $('#mk-edit-litres').focus();
+    }
+    function closeEdit() { editing = null; show($('#mk-edit'), false); }
+
+    async function saveEdit(e) {
+      e.preventDefault();
+      if (!editing) return;
+      setError('#mk-edit-error', '');
+      const v = editValues();
+      if (!v.cowId) { setError('#mk-edit-error', 'Choose the cow.'); return; }
+      if (v.litres === null || v.litres <= 0 || v.litres > 60) { setError('#mk-edit-error', 'Litres must be above 0 and at most 60.'); return; }
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(v.date) || v.date > todayLocal()) { setError('#mk-edit-error', 'Pick the date (not in the future).'); return; }
+      const changes = {};
+      if (v.cowId !== editing.cowId) { changes.cowId = v.cowId; changes.cowName = nameOf(v.cowId); }
+      if (v.session !== editing.session) changes.session = v.session;
+      if (Math.abs(v.litres - Number(editing.litres)) > 0.001) changes.litres = v.litres;
+      if (v.date !== editing.date) changes.date = v.date;
+      if (!Object.keys(changes).length) { closeEdit(); return; }
+      const c = clash(v);
+      if (c && !confirm(`${nameOf(c.cowId)} already has a ${c.session} entry that day (${r1(c.litres)} L). Keep both?`)) return;
+      const synced = editing.syncStatus === SYNC_STATUS.SYNCED;
+      const now = new Date().toISOString();
+      if (!synced) {
+        if (isMilkInFlight && isMilkInFlight(editing.id)) { setError('#mk-edit-error', 'This entry is uploading right now. Try again in a moment.'); return; }
+        await db.milk_logs.update(editing.id, { ...changes, updatedAt: now });
+        toast('Entry changed');
+        closeEdit();
+        return;
+      }
+      const reason = $('#mk-edit-reason').value.trim();
+      if (!reason) { setError('#mk-edit-error', 'Give a reason for the change (it is kept with the record).'); return; }
+      await queueCorrection({ sheet: 'Milk_Production', id: editing.clientId, changes, void: false, reason: reason.slice(0, 300) });
+      await db.milk_logs.update(editing.id, { ...changes, corrected: true, updatedAt: now });
+      toast('Changed: the sheet is corrected with the next sync');
+      closeEdit();
+    }
+
+    async function voidEdit() {
+      if (!editing) return;
+      const rec = editing;
+      if (rec.syncStatus !== SYNC_STATUS.SYNCED) {
+        if (isMilkInFlight && isMilkInFlight(rec.id)) { setError('#mk-edit-error', 'This entry is uploading right now. Try again in a moment.'); return; }
+        if (!confirm('Delete this entry? It has not been uploaded yet.')) return;
+        await db.milk_logs.delete(rec.id);
+        toast('Entry deleted', 'info');
+        closeEdit();
+        return;
+      }
+      const reason = $('#mk-edit-reason').value.trim();
+      if (!reason) { setError('#mk-edit-error', 'Give a reason for cancelling (e.g. entered twice).'); $('#mk-edit-reason').focus(); return; }
+      if (!confirm(`Cancel ${nameOf(rec.cowId)}'s ${rec.session} milking of ${r1(rec.litres)} L on ${fmt(rec.date)}? It stays in the sheet marked Void and is no longer counted.`)) return;
+      await queueCorrection({ sheet: 'Milk_Production', id: rec.clientId, changes: {}, void: true, reason: reason.slice(0, 300) });
+      await db.milk_logs.update(rec.id, { voided: true, updatedAt: new Date().toISOString() });
+      toast('Milking cancelled: the sheet is updated with the next sync', 'info');
+      closeEdit();
+    }
+
     /* ================= init ================= */
 
     function init() {
@@ -320,7 +433,7 @@
       $('#mu-refresh').addEventListener('click', () => refresh(true));
       $('#mu-recent').addEventListener('click', (e) => { const b = e.target.closest('.mu-del'); if (b) deleteEntry(b.dataset.kind, b.dataset.id); });
       const watch = (q, set) => Dexie.liveQuery(q).subscribe({ next: (r) => { set(r); renderSummary(); renderUse(); }, error: (er) => console.error('Milk use query failed:', er) });
-      watch(() => db.milk_logs.toArray(), (r) => { milk = r; });
+      watch(() => db.milk_logs.toArray(), (r) => { milk = r.filter((m) => !m.voided); });
       watch(() => db.calf_logs.toArray(), (r) => { calves = r; });
       watch(() => db.sales.toArray(), (r) => { sales = r; });
       watch(() => db.returns.toArray(), (r) => { returns = r; });
@@ -331,10 +444,17 @@
       // Health records change the "withheld" line: redraw when they do.
       Dexie.liveQuery(() => db.health_events.count()).subscribe({ next: () => renderSummary() });
       db.kv.get('milkUseList').then((x) => { if (x && x.value) { server = x.value; renderUse(); } }).catch(() => {});
+      // Edit a milking.
+      $('#mk-edit-form').addEventListener('submit', saveEdit);
+      $('#mk-edit-void').addEventListener('click', voidEdit);
+      $('#mk-edit-close').addEventListener('click', closeEdit);
+      $('#mk-edit').addEventListener('click', (e) => { if (e.target.id === 'mk-edit') closeEdit(); });
+      ['#mk-edit-cow', '#mk-edit-session', '#mk-edit-date'].forEach((sel) => $(sel).addEventListener('change', updateEditWarn));
+      document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && editing) closeEdit(); });
       setView('milking');
     }
 
-    return Object.freeze({ init, refresh, applyRename, renderSummary });
+    return Object.freeze({ init, refresh, applyRename, renderSummary, openEdit });
   }
 
   window.MaweMilkUse = Object.freeze({ create, USE, QUALITY, PAYLOAD });

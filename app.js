@@ -396,7 +396,8 @@
   }
 
   function findMilkDuplicate(cowId, milkSession, date) {
-    return db[STORES.MILK].where('[cowId+session+date]').equals([cowId, milkSession, date]).first();
+    // A cancelled entry (v5.8.2) is not a duplicate.
+    return db[STORES.MILK].where('[cowId+session+date]').equals([cowId, milkSession, date]).filter((r) => !r.voided).first();
   }
 
   function findCalfDuplicate(calfId, feedType, date) {
@@ -705,12 +706,23 @@
     synced: '<span class="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-farm-100 text-farm-800">Synced</span>',
   };
 
-  function renderRecent(listEl, records, describe, storeName) {
+  /** editable (milk only, v5.8.2): an Edit button on every entry; cancelled entries are struck through. */
+  function renderRecent(listEl, records, describe, storeName, editable = false) {
     if (!records.length) {
       listEl.innerHTML = '<li class="text-sm text-slate-400 px-1">No entries yet.</li>';
       return;
     }
     listEl.innerHTML = records.map((r) => {
+      if (r.voided) {
+        return `
+        <li class="flex items-center justify-between gap-3 bg-white/60 rounded-xl px-4 py-3 shadow-sm">
+          <div class="min-w-0 line-through text-slate-400">
+            <p class="font-semibold text-sm truncate">${describe(r)}</p>
+            <p class="text-xs">${esc(r.date)}</p>
+          </div>
+          <span class="shrink-0 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">Cancelled</span>
+        </li>`;
+      }
       const canDelete = r.syncStatus !== SYNC_STATUS.SYNCED;
       const errorLine = r.syncStatus === SYNC_STATUS.FAILED && r.lastError
         ? `<p class="text-xs text-red-600 truncate" title="${esc(r.lastError)}">${esc(r.lastError)}</p>`
@@ -723,12 +735,28 @@
             ${errorLine}
           </div>
           <div class="flex items-center gap-2 shrink-0">
-            ${STATUS_CHIP[r.syncStatus] || ''}
+            ${r.corrected ? '<span class="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800">Corrected</span>' : STATUS_CHIP[r.syncStatus] || ''}
+            ${editable ? `<button type="button" class="edit-btn text-xs font-semibold text-farm-700 underline px-1" data-id="${r.id}" aria-label="Edit entry">Edit</button>` : ''}
             ${canDelete ? `<button type="button" class="del-btn text-slate-400 hover:text-red-600 text-lg leading-none px-1"
                  data-store="${storeName}" data-id="${r.id}" aria-label="Delete entry">&times;</button>` : ''}
           </div>
         </li>`;
     }).join('');
+  }
+
+  const MILK_MORE_LIMIT = 40;
+  let milkRecentRows = [];
+  let milkShowAll = false;
+  function renderMilkRecent() {
+    const rows = milkShowAll ? milkRecentRows : milkRecentRows.slice(0, RECENT_LIMIT);
+    renderRecent($('#milk-recent'), rows,
+      (r) => `${esc(r.cowName || r.cowId)} · ${r.litres} L <span class="font-normal text-slate-500">${esc(r.session)}</span>`,
+      STORES.MILK, true);
+    const more = $('#milk-more');
+    if (more) {
+      more.classList.toggle('hidden', milkRecentRows.length <= RECENT_LIMIT);
+      more.textContent = milkShowAll ? 'Show fewer' : `Show more (last ${milkRecentRows.length})`;
+    }
   }
 
   /** liveQuery re-runs whenever the tables it read change, so the UI
@@ -741,11 +769,10 @@
       error: (e) => console.error('Badge query failed:', e),
     });
 
-    liveQuery(() => db[STORES.MILK].orderBy('createdAt').reverse().limit(RECENT_LIMIT).toArray())
+    // Milk: the last MILK_MORE_LIMIT entries are read; RECENT_LIMIT shown until "Show more".
+    liveQuery(() => db[STORES.MILK].orderBy('createdAt').reverse().limit(MILK_MORE_LIMIT).toArray())
       .subscribe({
-        next: (rows) => renderRecent($('#milk-recent'), rows,
-          (r) => `${esc(r.cowName || r.cowId)} · ${r.litres} L <span class="font-normal text-slate-500">${esc(r.session)}</span>`,
-          STORES.MILK),
+        next: (rows) => { milkRecentRows = rows; renderMilkRecent(); },
         error: (e) => console.error('Milk list query failed:', e),
       });
 
@@ -761,6 +788,12 @@
   }
 
   async function handleListClick(event) {
+    const edit = event.target.closest('.edit-btn');
+    if (edit) {
+      if (milkUse) milkUse.openEdit(Number(edit.dataset.id));
+      else toast('Editing needs milkuse.js: reload the app', 'error');
+      return;
+    }
     const btn = event.target.closest('.del-btn');
     if (!btn) return;
     if (!confirm('Delete this entry from the phone? It has not been uploaded yet.')) return;
@@ -1956,6 +1989,7 @@
       milkUse = window.MaweMilkUse.create({
         db, SYNC_STATUS, getSession: () => session, getDeviceId, makeUUID, todayLocal, esc, toast, requestSync,
         saveDebounceMs: SYNC_CONFIG.SAVE_DEBOUNCE_MS, callServer, queueCorrection, getHealth: () => health,
+        isMilkInFlight: (id) => inFlight.has(flightKey(STORES.MILK, id)),
       });
       milkUse.init();
     } else {
@@ -1991,6 +2025,7 @@
     document.querySelectorAll('.tab-btn').forEach((btn) =>
       btn.addEventListener('click', () => activateTab(btn.dataset.tab)));
     $('#milk-recent').addEventListener('click', handleListClick);
+    $('#milk-more').addEventListener('click', () => { milkShowAll = !milkShowAll; renderMilkRecent(); });
     $('#calf-recent').addEventListener('click', handleListClick);
     $('#sync-badge').addEventListener('click', handleBadgeTap);
     $('#logout-btn').addEventListener('click', handleLogout);
