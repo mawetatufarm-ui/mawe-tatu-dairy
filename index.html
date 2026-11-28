@@ -1355,12 +1355,42 @@
     </section>
 
     <section id="panel-reports" role="tabpanel" aria-labelledby="tab-reports" class="hidden panel-enter">
-      <nav class="grid grid-cols-3 gap-1 bg-white p-1 rounded-xl shadow-sm mb-3 text-xs font-semibold" role="tablist" aria-label="Report">
+      <nav class="grid grid-cols-4 gap-1 bg-white p-1 rounded-xl shadow-sm mb-3 text-xs font-semibold" role="tablist" aria-label="Report">
         <button type="button" class="rep-view-btn py-2 rounded-lg" data-view="sales">Customer sales</button>
         <button type="button" class="rep-view-btn py-2 rounded-lg" data-view="milk">Milk output</button>
         <button type="button" class="rep-view-btn py-2 rounded-lg" data-view="expenses">Expenses</button>
+        <!-- payreport.js (v5.10) -->
+        <button type="button" class="rep-pay-btn py-2 rounded-lg text-slate-600" data-view="payments" aria-selected="false">Payments</button>
       </nav>
-      <div class="bg-white rounded-2xl shadow-sm p-5 space-y-4">
+      <!-- Payments received (payreport.js) -->
+      <div id="payrep-view" class="hidden space-y-4">
+        <div class="bg-white rounded-2xl shadow-sm p-5 space-y-4">
+          <div><label for="payrep-customer" class="hf-label">Customer</label><select id="payrep-customer" class="hf-input"><option value="ALL">All customers</option></select></div>
+          <div class="grid grid-cols-2 gap-3">
+            <div><label for="payrep-from" class="hf-label">From</label><input id="payrep-from" type="date" class="hf-input" /></div>
+            <div><label for="payrep-to" class="hf-label">To</label><input id="payrep-to" type="date" class="hf-input" /></div>
+          </div>
+          <div class="flex flex-wrap gap-1.5 text-xs">
+            <button type="button" class="payrep-quick rounded-full border border-teal-300 px-3 py-1 text-teal-800" data-range="this">This month</button>
+            <button type="button" class="payrep-quick rounded-full border border-teal-300 px-3 py-1 text-teal-800" data-range="last">Last month</button>
+            <button type="button" class="payrep-quick rounded-full border border-teal-300 px-3 py-1 text-teal-800" data-range="30">Last 30 days</button>
+            <button type="button" class="payrep-quick rounded-full border border-teal-300 px-3 py-1 text-teal-800" data-range="year">This year</button>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div><label for="payrep-method" class="hf-label">Paid by</label><select id="payrep-method" class="hf-input"><option value="ALL">Any method</option><option>Cash</option><option>M-Pesa</option><option>Other</option></select></div>
+            <div><label for="payrep-status" class="hf-label">Status</label><select id="payrep-status" class="hf-input"><option value="ALL">All</option><option>Verified</option><option>Pending</option><option>Disputed</option></select></div>
+          </div>
+          <p id="payrep-error" class="hidden text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2" role="alert"></p>
+          <button id="payrep-run" type="button" class="w-full rounded-xl bg-teal-700 hover:bg-teal-800 text-white font-bold py-3.5 text-base shadow">Show report</button>
+          <div class="grid grid-cols-2 gap-2">
+            <button id="payrep-xlsx" type="button" disabled class="rounded-xl border border-teal-700 text-teal-800 font-semibold py-2.5 disabled:opacity-40">⬇ Excel</button>
+            <button id="payrep-pdf" type="button" disabled class="rounded-xl border border-teal-700 text-teal-800 font-semibold py-2.5 disabled:opacity-40">⬇ PDF</button>
+          </div>
+          <p class="text-xs text-slate-400">Received counts Verified and Pending payments; Disputed ones are listed but not counted. Needs internet.</p>
+        </div>
+        <div id="payrep-result" class="space-y-3"></div>
+      </div>
+      <div id="rep-form-card" class="bg-white rounded-2xl shadow-sm p-5 space-y-4">
         <div id="rep-customer-wrap">
           <label for="rep-customer" class="hf-label">Customer</label>
           <select id="rep-customer" class="hf-input"><option value="ALL">All customers</option></select>
@@ -1535,6 +1565,7 @@
   <script src="health.js" defer></script>
   <script src="milkuse.js" defer></script>
   <script src="growth.js" defer></script>
+  <script src="payreport.js" defer></script>
   <script src="reports.js" defer></script>
   <script src="app.js" defer></script>
 </body>

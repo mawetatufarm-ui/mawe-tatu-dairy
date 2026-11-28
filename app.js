@@ -2023,6 +2023,13 @@
       console.warn('growth.js did not load: calf weights are unavailable.');
     }
 
+    // Reports tab → Payments (payreport.js, v5.10): payments received between chosen dates.
+    if (window.MawePayReport) {
+      window.MawePayReport.create({ db, callServer, esc, toast, todayLocal, getSession: () => session }).init();
+    } else {
+      console.warn('payreport.js did not load: the payments report is unavailable.');
+    }
+
     // Reports tab (reports.js): customer sales, milk output and expenses for chosen dates.
     if (window.MaweReports) {
       reports = window.MaweReports.create({

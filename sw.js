@@ -6,7 +6,7 @@
  *
  * Strategy
  *   • INSTALL: download and cache every file the app needs (the "app shell"):
- *     index.html, herd.js, sales.js, reports.js, expenses.js, expense-list.js, fodder.js, breeding.js, health.js, milkuse.js, growth.js, app.js, manifest.json, the two icons, the
+ *     index.html, herd.js, sales.js, reports.js, expenses.js, expense-list.js, fodder.js, breeding.js, health.js, milkuse.js, growth.js, payreport.js, app.js, manifest.json, the two icons, the
  *     Tailwind CDN script and the Dexie CDN script.
  *     If any file fails to download, the install fails and the browser
  *     retries on the next visit, so a half-cached app is never activated.
@@ -20,13 +20,13 @@
  *   • UPDATE: a new sw.js waits until app.js sends SKIP_WAITING (the user
  *     taps "Reload" on the update banner), so nobody loses a half-typed entry.
  *
- * ►► Whenever you change ANY app file (index.html, herd.js, sales.js, reports.js, expenses.js, expense-list.js, fodder.js, breeding.js, health.js, milkuse.js, growth.js, app.js, a CDN URL),
+ * ►► Whenever you change ANY app file (index.html, herd.js, sales.js, reports.js, expenses.js, expense-list.js, fodder.js, breeding.js, health.js, milkuse.js, growth.js, payreport.js, app.js, a CDN URL),
  *    bump CACHE_VERSION below. That is what tells phones to update.
  * ===================================================================== */
 
 'use strict';
 
-const CACHE_VERSION = 'v5.10.0'; // v5.10.0: edit / cancel sales · v5.9.1: in calf from an earlier service, relative check, calf sires · v5.9.0: calf weights and ADG (growth.js) · v5.8.2: edit / cancel milk records · v5.8.1: refresh app.js (new deployment address) · v5.8.0: milk summary, use & quality (milkuse.js) · v5.7.0: health and milk withdrawal (health.js), corrections · v5.6.0: breeding and calving (breeding.js) · v5.5.1: container fills, fairer feeding rate · v5.5.0: Fodder tab — silage / hay batches, feed-out (fodder.js) · v5.4.0: expense list, credit, edits, receipts (expense-list.js) · v5.3.0: feed batch costing, more expense categories · v5.2.0: expenses (expenses.js) · v5.1.0: reports (reports.js) · v5.0.0: sales (sales.js) · v4.0.0: herd register (herd.js) · v3.0.0: Google Sign-In
+const CACHE_VERSION = 'v5.10.1'; // v5.10.1: payments report (payreport.js) · v5.10.0: edit / cancel sales · v5.9.1: in calf from an earlier service, relative check, calf sires · v5.9.0: calf weights and ADG (growth.js) · v5.8.2: edit / cancel milk records · v5.8.1: refresh app.js (new deployment address) · v5.8.0: milk summary, use & quality (milkuse.js) · v5.7.0: health and milk withdrawal (health.js), corrections · v5.6.0: breeding and calving (breeding.js) · v5.5.1: container fills, fairer feeding rate · v5.5.0: Fodder tab — silage / hay batches, feed-out (fodder.js) · v5.4.0: expense list, credit, edits, receipts (expense-list.js) · v5.3.0: feed batch costing, more expense categories · v5.2.0: expenses (expenses.js) · v5.1.0: reports (reports.js) · v5.0.0: sales (sales.js) · v4.0.0: herd register (herd.js) · v3.0.0: Google Sign-In
 const CACHE_PREFIX = 'mawe-tatu-';
 const SHELL_CACHE = `${CACHE_PREFIX}shell-${CACHE_VERSION}`;
 
@@ -49,6 +49,7 @@ const LOCAL_ASSETS = [
   new URL('./health.js', SCOPE).href,
   new URL('./milkuse.js', SCOPE).href,
   new URL('./growth.js', SCOPE).href,
+  new URL('./payreport.js', SCOPE).href,
   new URL('./app.js', SCOPE).href,
   new URL('./manifest.json', SCOPE).href,
   new URL('./icon-192.png', SCOPE).href,
