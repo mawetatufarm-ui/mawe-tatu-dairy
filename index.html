@@ -140,6 +140,7 @@
         <p class="text-sm text-slate-600 truncate">Signed in as <span id="user-name" class="font-semibold text-slate-800"></span></p>
         <p id="user-email" class="text-xs text-slate-400 truncate"></p>
       </div>
+      <button id="users-btn" type="button" class="hidden shrink-0 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700">Users</button>
       <button id="logout-btn" type="button"
               class="shrink-0 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-semibold text-slate-600 hover:bg-slate-50 active:scale-95">
         Log out
@@ -149,6 +150,8 @@
     <!-- ===================== TAB TOGGLE ===================== -->
     <!-- Segmented control. app.js swaps the active classes and shows/hides panels. -->
     <!-- Six sections. app.js swaps the active classes and shows/hides panels. -->
+    <!-- v5.11: shown to view-only users -->
+    <p id="ro-banner" class="hidden mb-3 rounded-xl bg-teal-50 border border-teal-200 text-teal-900 text-sm px-4 py-3">👁 <b>View only.</b> You can look at reports and download them; recording and changes are for the farm team.</p>
     <nav class="grid grid-cols-7 gap-0.5 bg-white p-1 rounded-2xl shadow-sm mb-4" role="tablist" aria-label="Choose a section">
       <button id="tab-milk" type="button" role="tab" aria-selected="true" aria-controls="panel-milk"
               data-tab="milk"
@@ -1505,6 +1508,27 @@
       <button type="submit" class="w-full rounded-xl bg-farm-700 hover:bg-farm-800 text-white font-bold py-3 shadow">Save changes</button>
       <button type="button" id="mk-edit-void" class="w-full rounded-xl border border-red-200 text-red-700 font-semibold py-2.5">Cancel this milking</button>
     </form>
+  </div>
+
+  <!-- Users (owners only, app.js v5.11) -->
+  <div id="users-sheet" class="hidden fixed inset-0 z-50 bg-black/40 flex items-end justify-center" role="dialog" aria-modal="true" aria-labelledby="users-title">
+    <div class="bg-white w-full max-w-md rounded-t-2xl p-5 space-y-3 max-h-[90vh] overflow-y-auto">
+      <div class="flex items-center justify-between">
+        <h2 id="users-title" class="text-base font-bold text-slate-800">Who can use the app</h2>
+        <button type="button" id="users-close" class="text-slate-400 text-2xl leading-none px-1" aria-label="Close">&times;</button>
+      </div>
+      <p class="text-xs text-slate-500"><b>Full access</b>: record, edit and see everything. <b>View only</b>: Reports tab only; the sheet refuses any change from them. Changes apply the next time the person opens the app.</p>
+      <ul id="users-list" class="text-sm"></ul>
+      <form id="users-add" class="space-y-2 border-t border-slate-200 pt-3" novalidate autocomplete="off">
+        <label for="users-email" class="hf-label">Add someone (their Google email)</label>
+        <input id="users-email" type="email" class="hf-input" placeholder="name@gmail.com" />
+        <div class="grid grid-cols-2 gap-2">
+          <select id="users-newrole" class="hf-input" aria-label="Access"><option value="viewer">View only</option><option value="editor">Full access</option></select>
+          <button type="submit" class="rounded-xl bg-farm-700 text-white font-bold py-2.5">Add</button>
+        </div>
+      </form>
+      <p id="users-error" class="hidden text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2" role="alert"></p>
+    </div>
   </div>
 
   <!-- Edit / cancel a sale (sales.js, v5.10) -->

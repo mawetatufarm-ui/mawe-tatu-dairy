@@ -627,6 +627,7 @@
 
   function activateTab(name) {
     if (!TAB_STYLES[name]) name = 'milk';
+    if (isViewer()) name = 'reports'; // v5.11: view-only users see the Reports tab only
 
     document.querySelectorAll('.tab-btn').forEach((btn) => {
       const tab = btn.dataset.tab;
@@ -1040,6 +1041,71 @@
     $('#user-name').textContent = first;
     $('#user-bar').title = session.email;
     $('#user-email').textContent = session.email;
+    applyRole();
+  }
+
+  /* ---------- Roles (v5.11) ----------
+   * The sheet decides (Code.gs: ALLOWED_EMAILS = full access, VIEWER_EMAILS = view only, OWNER_EMAILS = may
+   * manage users) and refuses any write from a view-only email. The app only mirrors it: a viewer sees the
+   * Reports tab alone, and an owner gets the Users button. The role comes with verifySession at sign-in and
+   * at start-up, and a READ_ONLY reply switches the phone to view-only at once.
+   */
+  const isViewer = () => !!(session && session.role === 'viewer');
+  function applyRole() {
+    const viewer = isViewer();
+    const nav = document.querySelector('nav[aria-label="Choose a section"]');
+    show(nav, !viewer);
+    show($('#ro-banner'), viewer);
+    show($('#users-btn'), !!(session && session.owner && !viewer));
+    if (viewer) activateTab('reports');
+  }
+  /** Ask the sheet for this person's current role (when online with a fresh sign-in). */
+  async function refreshRole() {
+    if (!session || !hasFreshToken() || !navigator.onLine) return;
+    const v = await verifyWithServer(session.idToken);
+    if (v.result === 'forbidden') { endSession(); await showAuthScreen('signin'); setAuthError(`${session ? session.email : 'This account'} no longer has access. Ask the farm owner.`); return; }
+    if (v.result !== 'ok' || !session) return;
+    if (v.role !== session.role || !!v.owner !== !!session.owner) {
+      const was = session.role;
+      session.role = v.role; session.owner = !!v.owner;
+      saveSession(session);
+      applyRole();
+      if (was && was !== v.role) toast(v.role === 'viewer' ? 'Your access is now view only' : 'You now have full access', 'info');
+      if (v.role === 'editor' && was === 'viewer') activateTab('milk');
+    }
+  }
+
+  /* ---------- Users screen (owners only, v5.11) ---------- */
+  function usersError(m) { const el = $('#users-error'); el.textContent = m || ''; show(el, !!m); }
+  function renderUsers(u) {
+    const row = (email, role) => {
+      const owner = (u.owners || []).includes(email);
+      return `<li class="flex items-center justify-between gap-2 border-t border-slate-100 py-2 first:border-0">
+        <span class="min-w-0 text-sm truncate">${esc(email)}${owner ? ' <span class="text-[11px] font-semibold text-farm-800">(owner)</span>' : ''}</span>
+        ${owner ? '<span class="text-xs text-slate-500 shrink-0">Full access</span>' : `<select class="users-role hf-input !w-auto !py-1.5 text-sm shrink-0" data-email="${esc(email)}">
+          <option value="editor"${role === 'editor' ? ' selected' : ''}>Full access</option>
+          <option value="viewer"${role === 'viewer' ? ' selected' : ''}>View only</option>
+          <option value="none">Remove</option></select>`}
+      </li>`;
+    };
+    $('#users-list').innerHTML = (u.editors || []).map((e) => row(e, 'editor')).join('') + (u.viewers || []).map((e) => row(e, 'viewer')).join('')
+      || '<li class="text-sm text-slate-400">No users.</li>';
+  }
+  async function openUsers() {
+    usersError('');
+    show($('#users-sheet'), true);
+    $('#users-list').innerHTML = '<li class="text-sm text-slate-400">Loading…</li>';
+    if (!navigator.onLine) { usersError('Managing users needs internet.'); return; }
+    try { renderUsers(await callServer({ action: 'listUsers' })); } catch (err) { usersError(err.message || String(err)); }
+  }
+  async function setRole(email, role) {
+    usersError('');
+    const label = { editor: 'full access', viewer: 'view only', none: 'no access' }[role];
+    if (!confirm(`Give ${email} ${label}?`)) { openUsers(); return; }
+    try {
+      renderUsers(await callServer({ action: 'setUserRole', email, role }));
+      toast(`${email}: ${label}. It applies the next time they open the app.`, 'success');
+    } catch (err) { usersError(err.message || String(err)); openUsers(); }
   }
 
   /* ---------- Google callback ---------- */
@@ -1090,6 +1156,9 @@
       idToken: token,
       tokenExp: claims.exp * 1000,
       signedInAt: new Date().toISOString(),
+      // v5.11: role from the sheet; offline sign-in keeps the last known role for this person.
+      role: verdict.result === 'ok' ? verdict.role : (!isNewUser && session && session.role) || 'editor',
+      owner: verdict.result === 'ok' ? verdict.owner : !!(!isNewUser && session && session.owner),
     };
     saveSession(session);
     auth.silentRefreshTried = false;
@@ -1129,7 +1198,7 @@
       });
       if (!res.ok) return { result: 'unknown' };
       const data = JSON.parse(await res.text());
-      if (data.status === 'success') return { result: 'ok' };
+      if (data.status === 'success') return { result: 'ok', role: data.role === 'viewer' ? 'viewer' : 'editor', owner: !!data.owner };
       if (data.code === 'AUTH_FORBIDDEN') return { result: 'forbidden', message: data.message };
       if (data.code === 'AUTH_INVALID') return { result: 'invalid', message: data.message };
       return { result: 'unknown' };
@@ -1685,6 +1754,11 @@
         err.code = data.code;
         throw err;
       }
+      // v5.11: this email has view-only access (changed by the owner): switch the phone to view-only.
+      if (data.code === 'READ_ONLY') {
+        if (session && session.role !== 'viewer') { session.role = 'viewer'; session.owner = false; saveSession(session); applyRole(); }
+        throw new SyncError('View-only access: nothing can be saved from this account', 'server');
+      }
       // The Apps Script project is older than this app: a script file is missing or it was not redeployed.
       if (/^Unknown (action|sheet)/.test(String(data.message || ''))) {
         throw new SyncError('Apps Script needs updating: add the missing script files, then Deploy → Manage deployments → ✏️ → New version (' + String(data.message) + ')', 'server');
@@ -2063,6 +2137,17 @@
     $('#calf-recent').addEventListener('click', handleListClick);
     $('#sync-badge').addEventListener('click', handleBadgeTap);
     $('#logout-btn').addEventListener('click', handleLogout);
+    // v5.11: Users screen (owners).
+    $('#users-btn').addEventListener('click', openUsers);
+    $('#users-close').addEventListener('click', () => show($('#users-sheet'), false));
+    $('#users-sheet').addEventListener('click', (e) => { if (e.target.id === 'users-sheet') show($('#users-sheet'), false); });
+    $('#users-list').addEventListener('change', (e) => { const sel = e.target.closest('.users-role'); if (sel) setRole(sel.dataset.email, sel.value); });
+    $('#users-add').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const email = $('#users-email').value.trim().toLowerCase();
+      if (!/^[^\s@,]+@[^\s@,]+\.[^\s@,]+$/.test(email)) { usersError('Type a valid email address.'); return; }
+      setRole(email, $('#users-newrole').value).then(() => { $('#users-email').value = ''; });
+    });
     $('#auth-cancel').addEventListener('click', () => { if (session) enterApp(); });
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
@@ -2076,6 +2161,7 @@
     session = loadSession();
     if (session) {
       enterApp();
+      refreshRole(); // v5.11: pick up a role change made by the owner
     } else {
       await showAuthScreen('signin');
     }
