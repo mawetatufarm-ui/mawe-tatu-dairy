@@ -105,10 +105,12 @@
   // v5.8 (milkuse.js): where the milk went and quality checks.
   const MILK_USE = 'milk_use';
   const MILK_QUALITY = 'milk_quality';
+  // v5.9 (growth.js): calf and heifer weights. Kept on the phone (not pruned) so ADG works offline.
+  const CALF_WEIGHTS = 'calf_weights';
 
   // Append-only stores, in upload order: prices before sales, sales before the
   // payments and returns that refer to them.
-  const APPEND_STORES = Object.freeze([SALES.PRICES, STORES.MILK, STORES.CALF, SALES.SALES, SALES.PAYMENTS, SALES.RETURNS, EXPENSES, EXPENSE_PAYMENTS, FEED_BATCHES, FODDER_BATCHES, FODDER_FEEDOUT, BREEDING, HEALTH, MILK_USE, MILK_QUALITY]);
+  const APPEND_STORES = Object.freeze([SALES.PRICES, STORES.MILK, STORES.CALF, SALES.SALES, SALES.PAYMENTS, SALES.RETURNS, EXPENSES, EXPENSE_PAYMENTS, FEED_BATCHES, FODDER_BATCHES, FODDER_FEEDOUT, BREEDING, HEALTH, MILK_USE, MILK_QUALITY, CALF_WEIGHTS]);
   // Synced rows of these are removed from the phone after 30 days (prices are
   // kept: the sheet's list replaces them on every download).
   const PRUNE_STORES = Object.freeze([STORES.MILK, STORES.CALF, SALES.SALES, SALES.PAYMENTS, SALES.RETURNS, EXPENSES, EXPENSE_PAYMENTS, FEED_BATCHES, EXPENSE_EDITS, FODDER_FEEDOUT, CORRECTIONS, MILK_USE, MILK_QUALITY]);
@@ -138,6 +140,7 @@
     [HEALTH]: 'Health_Events',
     [MILK_USE]: 'Milk_Use',
     [MILK_QUALITY]: 'Milk_Quality',
+    [CALF_WEIGHTS]: 'Calf_Weights',
   });
 
   // Exactly which fields are sent to the server for each store.
@@ -156,6 +159,7 @@
     ...((window.MaweBreeding && window.MaweBreeding.PAYLOAD) || {}),
     ...((window.MaweHealth && window.MaweHealth.PAYLOAD) || {}),
     ...((window.MaweMilkUse && window.MaweMilkUse.PAYLOAD) || {}),
+    ...((window.MaweGrowth && window.MaweGrowth.PAYLOAD) || {}),
   });
 
   // The three daily milkings at Mawe Tatu: ~5:00 am, ~1:00 pm, ~8:30 pm.
@@ -191,7 +195,7 @@
    *   herd, status, category  list filters and dropdowns
    *   damId                   offspring lookups
    * Existing milk and calf rows are untouched by the upgrades. Never edit
-   * an old version block; add db.version(11) for the next schema change.
+   * an old version block; add db.version(12) for the next schema change.
    * ------------------------------------------------------------------ */
 
   const db = new Dexie(DB_NAME);
@@ -262,6 +266,11 @@
     [MILK_QUALITY]: '++id, &clientId, syncStatus, date, checkId, createdAt',
   });
 
+  /* Version 11 (calf and heifer weights — growth.js). Never pruned. */
+  db.version(11).stores({
+    [CALF_WEIGHTS]: '++id, &clientId, syncStatus, date, animalId, createdAt',
+  });
+
   /** The herd register module (herd.js). Created in init() once the DB is open. */
   let herd = null;
   /** The sales module (sales.js). Created in init(). */
@@ -278,6 +287,8 @@
   let health = null;
   /** The milk use module (milkuse.js). Created in init(). */
   let milkUse = null;
+  /** The growth module (growth.js). Created in init(). */
+  let growth = null;
 
   /* ------------------------------------------------------------------
    * 4. UTILITY HELPERS
@@ -1318,6 +1329,7 @@
             if (breeding) await breeding.refresh(false);
             if (health) await health.refresh(false);
             if (milkUse) await milkUse.refresh(false);
+            if (growth) await growth.refresh(false);
           }
           return totals;
         });
@@ -1850,6 +1862,7 @@
     get breeding() { return breeding; },
     get health() { return health; },
     get milkUse() { return milkUse; },
+    get growth() { return growth; },
     db, STORES, SYNC_STATUS, SHEET_FOR_STORE, MILK_SESSIONS, FEED_TYPES,
     addMilkLog, addCalfLog, getPending, countPending,
     markSynced, markFailed, deleteUnsynced,
@@ -1994,6 +2007,18 @@
       milkUse.init();
     } else {
       console.warn('milkuse.js did not load: the milk summary is unavailable.');
+    }
+
+    // Calves tab → Growth (growth.js): weights and ADG.
+    if (window.MaweGrowth) {
+      growth = window.MaweGrowth.create({
+        db, SYNC_STATUS, getSession: () => session, getDeviceId, makeUUID, todayLocal, esc, toast, requestSync,
+        saveDebounceMs: SYNC_CONFIG.SAVE_DEBOUNCE_MS, callServer, queueCorrection,
+        isInFlight: (id) => inFlight.has(flightKey(CALF_WEIGHTS, id)),
+      });
+      growth.init();
+    } else {
+      console.warn('growth.js did not load: calf weights are unavailable.');
     }
 
     // Reports tab (reports.js): customer sales, milk output and expenses for chosen dates.
