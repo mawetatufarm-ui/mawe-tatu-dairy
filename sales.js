@@ -33,7 +33,16 @@
  *   5. Rendering: selects, info lines, recent lists, customer list
  *   6. Forms: Sale, Payment, Return, Customer, Default price
  *   7. init + public API
- * ===================================================================== */
+ * ===================================================================== * v5.10 (28 Nov 2026): EDIT / CANCEL SALES. Each sale in the recent list has
+ * Edit (#se-sheet): customer, date, litres, price (amount = litres × price),
+ * Cash/Credit, notes. Not uploaded → the phone's sale (and its unsent cash
+ * payment) are changed; Delete removes it. Uploaded → a reason is required and
+ * a correction is queued for the sheet (Corrections.gs: the sale row is
+ * changed in place, the linked cash payment follows, Record_Changes logs it);
+ * Cancel this sale = Status Void (kept, but out of balances and reports).
+ * A sale with returns cannot be cancelled, moved to another customer or cut
+ * below the litres returned. "Show more" lists up to 40 sales on this phone.
+ */
 
 (() => {
   'use strict';
@@ -74,7 +83,7 @@
   function create(deps) {
     const {
       db, SYNC_STATUS, getSession, getDeviceId, makeUUID, todayLocal, esc, toast, requestSync,
-      saveDebounceMs, isInFlight,
+      saveDebounceMs, isInFlight, queueCorrection,
     } = deps;
     const $ = (sel) => document.querySelector(sel);
     const show = (el, visible) => el && el.classList.toggle('hidden', !visible);
@@ -93,6 +102,8 @@
     let customerFilter = 'Active';
     let editingCustomer = null;      // { originalId, isNew }
     let saleTouchedPayment = false;  // user typed in the cash-sale payment boxes
+    let editingSale = null;          // v5.10: the sale open in #se-sheet
+    let salesShowAll = false;        // v5.10: "Show more" in the sales list
 
     const r2 = (x) => Math.round(x * 100) / 100;
     const r1 = (x) => Math.round(x * 10) / 10;
@@ -147,10 +158,10 @@
     /** What a customer owes now: last server figure + this phone's newer entries. */
     function balanceOf(id) {
       let b = snapshot.balances[id] ? Number(snapshot.balances[id].balance) || 0 : 0;
-      local.sales.forEach((s) => { if (s.customerId === id && notInSnapshot(s)) b += Number(s.amount) || 0; });
+      local.sales.forEach((s) => { if (s.customerId === id && !s.voided && notInSnapshot(s)) b += Number(s.amount) || 0; });
       local.returns.forEach((r) => { if (r.customerId === id && notInSnapshot(r)) b -= Number(r.amount) || 0; });
       local.payments.forEach((p) => {
-        if (p.customerId === id && p.status !== 'Disputed' && notInSnapshot(p)) b -= Number(p.totalPaid) || 0;
+        if (p.customerId === id && p.status !== 'Disputed' && !p.voided && notInSnapshot(p)) b -= Number(p.totalPaid) || 0;
       });
       return r2(b);
     }
@@ -183,9 +194,10 @@
     /** A customer's recent sales that can still take a return, newest first. */
     function returnableSales(customerId) {
       const map = new Map();
-      (snapshot.recentSales || []).forEach((s) => { if (s.customerId === customerId) map.set(s.saleId, { ...s, fromServer: true }); });
+      const voided = new Set(local.sales.filter((s) => s.voided).map((s) => s.saleId));
+      (snapshot.recentSales || []).forEach((s) => { if (s.customerId === customerId && !voided.has(s.saleId)) map.set(s.saleId, { ...s, fromServer: true }); });
       local.sales.forEach((s) => {
-        if (s.customerId !== customerId || s.transactionType !== 'Sale' || !(s.litres > 0)) return;
+        if (s.customerId !== customerId || s.transactionType !== 'Sale' || !(s.litres > 0) || s.voided) return;
         const prev = map.get(s.saleId);
         map.set(s.saleId, { saleId: s.saleId, date: s.date, customerId: s.customerId, litres: s.litres,
           pricePerLitre: s.pricePerLitre, returnedLitres: prev ? prev.returnedLitres : 0 });
@@ -414,6 +426,14 @@
       if (!el) return;
       if (!rows.length) { el.innerHTML = '<li class="text-sm text-slate-400 px-1">No entries yet.</li>'; return; }
       el.innerHTML = rows.map((r) => {
+        if (r.voided) {
+          return `
+          <li class="flex items-center justify-between gap-3 bg-white/60 rounded-xl px-4 py-3 shadow-sm">
+            <div class="min-w-0 line-through text-slate-400"><p class="font-semibold text-sm truncate">${describe(r)}</p>
+              <p class="text-xs">${esc(r[ID_FIELD[store]] || '')} · ${esc(fmtDate(r.date))}</p></div>
+            <span class="shrink-0 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">Cancelled</span>
+          </li>`;
+        }
         const err = r.syncStatus === SYNC_STATUS.FAILED && r.lastError ? `<p class="text-xs text-red-600">${esc(r.lastError)}</p>` : '';
         return `
           <li class="flex items-center justify-between gap-3 bg-white rounded-xl px-4 py-3 shadow-sm">
@@ -423,7 +443,8 @@
               ${err}
             </div>
             <div class="flex items-center gap-2 shrink-0">
-              ${CHIP[r.syncStatus] || ''}
+              ${r.corrected ? '<span class="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800">Corrected</span>' : CHIP[r.syncStatus] || ''}
+              ${store === STORES.SALES && queueCorrection ? `<button type="button" class="sale-edit text-xs font-semibold text-sky-700 underline px-1" data-id="${r.id}">Edit</button>` : ''}
               ${!isSynced(r) ? `<button type="button" class="sales-del text-slate-400 hover:text-red-600 text-lg leading-none px-1" data-store="${store}" data-id="${r.id}" aria-label="Delete entry">&times;</button>` : ''}
             </div>
           </li>`;
@@ -433,7 +454,10 @@
     const newest = (list) => list.slice().sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).slice(0, RECENT);
 
     function renderLists() {
-      renderList($('#sale-recent'), newest(local.sales), STORES.SALES, (s) =>
+      const saleRows = local.sales.slice().sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+      const more = $('#sale-more');
+      if (more) { show(more, saleRows.length > RECENT); more.textContent = salesShowAll ? 'Show fewer' : `Show more (last ${Math.min(40, saleRows.length)})`; }
+      renderList($('#sale-recent'), saleRows.slice(0, salesShowAll ? 40 : RECENT), STORES.SALES, (s) =>
         s.transactionType === 'Balance B/F'
           ? `${esc(custName(s.customerId))} · B/F ${money(s.amount)}`
           : `${esc(custName(s.customerId))} · ${s.litres} L · ${money(s.amount)} <span class="font-normal text-slate-500">${esc(s.saleType)}</span>`);
@@ -472,8 +496,7 @@
             <button type="button" class="cust-item w-full text-left flex items-start justify-between gap-3 bg-white rounded-xl px-4 py-3 shadow-sm active:scale-[.99]" data-id="${esc(c.customerId)}">
               <div class="min-w-0">
                 <p class="font-semibold text-sm truncate">${esc(c.name)} <span class="font-normal text-slate-400">${esc(c.customerId)}</span></p>
-                <p class="text-xs text-slate-500 truncate">${esc([c.customerType, c.location].filter(Boolean).join(' · '))}</p>
-                ${sp ? `<p class="text-xs text-violet-700">Special price ${money(sp.price)}/L</p>` : ''}
+                <p class="text-xs text-slate-500 truncate">${esc([c.customerType, c.location].filter(Boolean).join(' · '))}${sp ? ` · special ${money(sp.price)}` : ''}</p>
                 <p class="text-xs mt-0.5 ${b > 0.005 ? 'text-red-700 font-semibold' : 'text-slate-500'}">${esc(owesText(c.customerId))}</p>
                 ${err}
               </div>
@@ -902,7 +925,180 @@
       openCustomerForm(null, viewName);
     }
 
+    /* ----------------------------------------------------------------
+     * EDIT / CANCEL A SALE (v5.10)
+     * ---------------------------------------------------------------- */
+
+    /** Litres already returned on a sale (sheet figure + this phone's newer returns). */
+    function returnedFor(saleId) {
+      const srv = (snapshot.recentSales || []).find((x) => x.saleId === saleId);
+      let l = srv ? Number(srv.returnedLitres) || 0 : 0;
+      local.returns.forEach((r) => { if (r.saleId === saleId && (notInSnapshot(r) || !srv)) l += Number(r.totalLitres) || 0; });
+      return r1(l);
+    }
+    function seError(m) { const el = $('#se-error'); el.textContent = m || ''; show(el, !!m); }
+
+    function openSaleEdit(id) {
+      const s = local.sales.find((x) => x.id === id);
+      if (!s || s.voided) { toast('That sale is no longer on this phone', 'error'); return; }
+      editingSale = s;
+      const synced = isSynced(s);
+      const bf = s.transactionType === 'Balance B/F';
+      const sel = $('#se-customer');
+      sel.innerHTML = customers.filter((c) => c.status !== 'Inactive' || c.customerId === s.customerId)
+        .map((c) => `<option value="${esc(c.customerId)}">${esc(c.name)} (${esc(c.customerId)})</option>`).join('');
+      if (!byId.has(s.customerId)) sel.insertAdjacentHTML('afterbegin', `<option value="${esc(s.customerId)}">${esc(s.customerName || s.customerId)}</option>`);
+      sel.value = s.customerId;
+      $('#se-title').textContent = `Edit ${bf ? 'balance brought forward' : 'sale'} ${s.saleId}`;
+      $('#se-date').value = s.date; $('#se-date').max = todayLocal();
+      $('#se-litres').value = bf ? '' : s.litres;
+      $('#se-price').value = bf ? '' : s.pricePerLitre;
+      $('#se-amount').value = bf ? s.amount : '';
+      $('#se-type').value = s.saleType || 'Credit';
+      $('#se-notes').value = s.notes || '';
+      $('#se-reason').value = ''; $('#se-payref').value = ''; $('#se-paymethod').value = 'Cash';
+      show($('#se-sale-fields'), !bf); show($('#se-bf-fields'), bf);
+      show($('#se-reason-wrap'), synced);
+      const ret = bf ? 0 : returnedFor(s.saleId);
+      $('#se-returns').textContent = ret > 0 ? `${ret} L of this sale was returned: it cannot be cancelled, moved to another customer or cut below ${ret} L.` : '';
+      show($('#se-returns'), ret > 0);
+      $('#se-info').textContent = synced
+        ? 'Already in Google Sheets: the sheet is corrected at the next sync (a cash sale\'s payment follows), and the change is logged with your reason.'
+        : 'Not uploaded yet: the sale on this phone is changed.';
+      $('#se-void').textContent = synced ? 'Cancel this sale' : 'Delete this sale';
+      seError('');
+      updateSaleEdit();
+      show($('#se-sheet'), true);
+    }
+    function closeSaleEdit() { editingSale = null; show($('#se-sheet'), false); }
+
+    function updateSaleEdit() {
+      const s = editingSale;
+      if (!s) return;
+      const l = num($('#se-litres').value), p = num($('#se-price').value);
+      $('#se-total').textContent = l && p ? `Amount: ${money(r2(l * p))}` : '';
+      // Credit → Cash: ask how it was paid (a payment is added).
+      show($('#se-pay-wrap'), s.transactionType !== 'Balance B/F' && s.saleType !== 'Cash' && $('#se-type').value === 'Cash');
+      const c = byId.get($('#se-customer').value);
+      $('#se-custnote').textContent = c && c.customerId !== s.customerId ? `Moves the sale to ${c.name}${s.saleType === 'Cash' ? ' (its payment moves too)' : ''}.` : '';
+    }
+
+    /** The changes made in the panel, or { error }. */
+    function saleEditChanges() {
+      const s = editingSale;
+      const bf = s.transactionType === 'Balance B/F';
+      const date = $('#se-date').value;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date > todayLocal()) return { error: 'Pick the date (not in the future).' };
+      const ch = {};
+      if (date !== s.date) ch.date = date;
+      const cid = $('#se-customer').value;
+      if (cid !== s.customerId) { const c = byId.get(cid); ch.customerId = cid; ch.customerName = c ? c.name : ''; ch.customerType = c ? c.customerType : ''; }
+      if (bf) {
+        const a = num($('#se-amount').value);
+        if (a === null || a === 0 || Math.abs(a) > 10000000) return { error: 'Enter the balance (negative if they were in credit).' };
+        if (Math.abs(a - Number(s.amount)) > 0.005) ch.amount = r2(a);
+      } else {
+        const l = num($('#se-litres').value), p = num($('#se-price').value);
+        if (l === null || l <= 0 || l > 1000) return { error: 'Litres must be above 0 and at most 1,000.' };
+        if (p === null || p <= 0 || p > 1000) return { error: 'Enter the price per litre.' };
+        if (Math.abs(l - Number(s.litres)) > 0.0001) ch.litres = l;
+        if (Math.abs(p - Number(s.pricePerLitre)) > 0.0001) ch.pricePerLitre = p;
+        const amount = r2(l * p);
+        if (Math.abs(amount - Number(s.amount)) > 0.005) ch.amount = amount;
+        if ($('#se-type').value !== s.saleType) ch.saleType = $('#se-type').value;
+        const ret = returnedFor(s.saleId);
+        if (ret > 0 && l < ret - 0.01) return { error: `${ret} L of this sale was returned: litres cannot be less than that.` };
+        if (ret > 0 && ch.customerId) return { error: 'This sale has returns: it cannot be moved to another customer.' };
+      }
+      const notes = $('#se-notes').value.trim().slice(0, 300);
+      if (notes !== (s.notes || '')) ch.notes = notes;
+      return { changes: ch };
+    }
+
+    /** New split of a payment for a new amount: one method keeps it all; otherwise the largest part takes the difference. */
+    function rebalance(p, amount) {
+      const parts = { cashPaid: Number(p.cashPaid) || 0, mpesaPaid: Number(p.mpesaPaid) || 0, otherPaid: Number(p.otherPaid) || 0 };
+      const total = r2(parts.cashPaid + parts.mpesaPaid + parts.otherPaid);
+      const keys = Object.keys(parts).filter((k) => parts[k] > 0);
+      const big = (keys.length ? keys : ['cashPaid']).sort((a, b) => parts[b] - parts[a])[0];
+      parts[big] = r2(parts[big] + amount - total);
+      if (parts[big] < 0) { Object.keys(parts).forEach((k) => { parts[k] = 0; }); parts[big] = amount; }
+      return { ...parts, totalPaid: amount };
+    }
+
+    async function saveSaleEdit(e) {
+      e.preventDefault();
+      const s = editingSale;
+      if (!s) return;
+      seError('');
+      const r = saleEditChanges();
+      if (r.error) { seError(r.error); return; }
+      const ch = r.changes;
+      if (!Object.keys(ch).length) { closeSaleEdit(); return; }
+      const merged = { ...s, ...ch };
+      const now = new Date().toISOString();
+      const linked = local.payments.filter((p) => p.linkedSaleId === s.saleId && !p.voided);
+      if (!isSynced(s)) {
+        if (isInFlight(STORES.SALES, s.id) || linked.some((p) => isInFlight(STORES.PAYMENTS, p.id))) { seError('This sale is uploading right now. Try again in a moment.'); return; }
+        await db.transaction('rw', db[STORES.SALES], db[STORES.PAYMENTS], async () => {
+          await db[STORES.SALES].update(s.id, { ...ch, updatedAt: now });
+          const unsent = linked.filter((p) => !isSynced(p));
+          if (merged.saleType === 'Cash' && merged.transactionType === 'Sale') {
+            if (unsent.length) {
+              for (const p of unsent) await db[STORES.PAYMENTS].update(p.id, { ...rebalance(p, Number(merged.amount)), date: merged.date, customerId: merged.customerId, customerName: merged.customerName || p.customerName, updatedAt: now });
+            } else {
+              const m = $('#se-paymethod').value;
+              const amount = Number(merged.amount);
+              await db[STORES.PAYMENTS].add({ ...baseMeta(), paymentId: nextDocId('P', merged.date), date: merged.date, customerId: merged.customerId, customerName: merged.customerName || '',
+                cashPaid: m === 'Cash' ? amount : 0, mpesaPaid: m === 'M-Pesa' ? amount : 0, otherPaid: m === 'Other' ? amount : 0, totalPaid: amount,
+                receiptRef: $('#se-payref').value.trim().slice(0, 300), note: 'Paid with the sale', status: 'Verified', linkedSaleId: s.saleId });
+            }
+          } else {
+            for (const p of unsent) await db[STORES.PAYMENTS].delete(p.id);
+          }
+        });
+        toast('Sale changed');
+        closeSaleEdit();
+        return;
+      }
+      const reason = $('#se-reason').value.trim();
+      if (!reason) { seError('Give a reason for the change (it is kept with the record).'); $('#se-reason').focus(); return; }
+      const extra = ch.saleType === 'Cash' ? { payMethod: $('#se-paymethod').value, payRef: $('#se-payref').value.trim().slice(0, 300) } : null;
+      await queueCorrection({ sheet: 'Sales', id: s.saleId, changes: ch, void: false, reason: reason.slice(0, 300), extra });
+      await db[STORES.SALES].update(s.id, { ...ch, corrected: true, updatedAt: now });
+      // The phone's copy of the linked payment, for display (the sheet does the real change).
+      for (const p of linked) {
+        if (merged.saleType === 'Cash') await db[STORES.PAYMENTS].update(p.id, { ...rebalance(p, Number(merged.amount)), date: merged.date, customerId: merged.customerId, corrected: true, updatedAt: now });
+        else await db[STORES.PAYMENTS].update(p.id, { voided: true, updatedAt: now });
+      }
+      toast('Changed: the sheet is corrected with the next sync');
+      closeSaleEdit();
+    }
+
+    async function voidSaleEdit() {
+      const s = editingSale;
+      if (!s) return;
+      seError('');
+      if (!isSynced(s)) {
+        if (!confirm(`Delete sale ${s.saleId}? It has not been uploaded yet.`)) return;
+        try { await deleteEntry(STORES.SALES, s.id); toast('Sale deleted', 'info'); closeSaleEdit(); } catch (err) { seError(err.message); }
+        return;
+      }
+      if (s.transactionType !== 'Balance B/F' && returnedFor(s.saleId) > 0) { seError('This sale has returns: it cannot be cancelled.'); return; }
+      const reason = $('#se-reason').value.trim();
+      if (!reason) { seError('Give a reason for cancelling (e.g. entered twice).'); $('#se-reason').focus(); return; }
+      if (!confirm(`Cancel sale ${s.saleId} (${custName(s.customerId)}, ${money(s.amount)})? It stays in the sheet marked Void and no longer counts in balances, statements or reports${s.saleType === 'Cash' ? '; its payment is cancelled too' : ''}.`)) return;
+      await queueCorrection({ sheet: 'Sales', id: s.saleId, changes: {}, void: true, reason: reason.slice(0, 300) });
+      const now = new Date().toISOString();
+      await db[STORES.SALES].update(s.id, { voided: true, updatedAt: now });
+      for (const p of local.payments.filter((x) => x.linkedSaleId === s.saleId)) await db[STORES.PAYMENTS].update(p.id, { voided: true, updatedAt: now });
+      toast('Sale cancelled: the sheet is updated with the next sync', 'info');
+      closeSaleEdit();
+    }
+
     async function handleListClick(e) {
+      const ed = e.target.closest('.sale-edit');
+      if (ed) { openSaleEdit(Number(ed.dataset.id)); return; }
       const btn = e.target.closest('.sales-del');
       if (!btn) return;
       if (!confirm('Delete this entry from the phone? It has not been uploaded yet.')) return;
@@ -940,6 +1136,16 @@
       ['#ret-returned', '#ret-soldthrough'].forEach((s) => $(s).addEventListener('input', () => updateReturnForm('litres')));
 
       ['#sale-recent', '#pay-recent', '#ret-recent'].forEach((s) => $(s).addEventListener('click', handleListClick));
+      // v5.10: edit / cancel a sale.
+      if ($('#se-form')) {
+        $('#se-form').addEventListener('submit', saveSaleEdit);
+        $('#se-void').addEventListener('click', voidSaleEdit);
+        $('#se-close').addEventListener('click', closeSaleEdit);
+        $('#se-sheet').addEventListener('click', (ev) => { if (ev.target.id === 'se-sheet') closeSaleEdit(); });
+        ['#se-litres', '#se-price'].forEach((x) => $(x).addEventListener('input', updateSaleEdit));
+        ['#se-type', '#se-customer'].forEach((x) => $(x).addEventListener('change', updateSaleEdit));
+        $('#sale-more').addEventListener('click', () => { salesShowAll = !salesShowAll; renderLists(); });
+      }
       $('#cust-add').addEventListener('click', () => openCustomerForm(null));
       $('#cust-list').addEventListener('click', (e) => { const b = e.target.closest('.cust-item'); if (b) openCustomerForm(b.dataset.id); });
       document.querySelectorAll('.cust-filter').forEach((b) => b.addEventListener('click', () => { customerFilter = b.dataset.filter; renderCustomers(); }));

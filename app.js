@@ -1392,10 +1392,11 @@
    * ------------------------------------------------------------------ */
 
   /** Save a correction on the phone; it uploads with the next sync (correctRecords). */
-  async function queueCorrection({ sheet, id, changes, void: isVoid = false, reason = '' }) {
+  async function queueCorrection({ sheet, id, changes, void: isVoid = false, reason = '', extra = null }) {
     const now = new Date().toISOString();
     await db[CORRECTIONS].add({
-      clientId: makeUUID(), deviceId: getDeviceId(), sheet, recordId: id, changes: changes || {}, void: !!isVoid, reason,
+      // extra (v5.10): additional fields for the sheet, e.g. { payMethod, payRef } when a sale becomes cash.
+      clientId: makeUUID(), deviceId: getDeviceId(), sheet, recordId: id, changes: changes || {}, void: !!isVoid, reason, extra: extra || null,
       updatedBy: session ? session.email : '', createdAt: now, updatedAt: now,
       syncStatus: SYNC_STATUS.PENDING, syncAttempts: 0, lastError: null, syncedAt: null,
     });
@@ -1408,7 +1409,7 @@
     const pending = await db[CORRECTIONS].where('syncStatus').anyOf([SYNC_STATUS.PENDING, SYNC_STATUS.FAILED]).sortBy('createdAt');
     const todo = pending.filter((c) => (c.syncAttempts || 0) < 5 || c.syncStatus === SYNC_STATUS.PENDING);
     if (!todo.length) return totals;
-    const reply = await callServer({ action: 'correctRecords', records: todo.map((c) => ({ clientId: c.clientId, sheet: c.sheet, id: c.recordId, changes: c.changes,
+    const reply = await callServer({ action: 'correctRecords', records: todo.map((c) => ({ ...(c.extra || {}), clientId: c.clientId, sheet: c.sheet, id: c.recordId, changes: c.changes,
       void: c.void, reason: c.reason, updatedBy: c.updatedBy, deviceId: c.deviceId, updatedAt: c.createdAt })) });
     if (!Array.isArray(reply.results)) throw new SyncError('Apps Script reply is missing the results list', 'server');
     const now = new Date().toISOString();
@@ -1938,6 +1939,7 @@
       requestSync,
       saveDebounceMs: SYNC_CONFIG.SAVE_DEBOUNCE_MS,
       isInFlight: (storeName, id) => inFlight.has(flightKey(storeName, id)),
+      queueCorrection, // v5.10: edit / cancel uploaded sales
     });
     sales.init();
 
