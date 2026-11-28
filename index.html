@@ -618,6 +618,16 @@
             </div>
             <div><label for="brd-sire" class="hf-label">Bull</label><select id="brd-sire" class="hf-input"></select></div>
             <div id="brd-sirecode-wrap"><label for="brd-sirecode" class="hf-label">Bull name or semen code</label><input id="brd-sirecode" type="text" maxlength="60" class="hf-input" placeholder="e.g. 7HO12345 or neighbour's bull" /></div>
+            <p id="brd-codehint" class="text-xs text-slate-500 empty:hidden -mt-2"></p>
+            <p id="brd-avoid" class="hidden text-xs text-red-800 bg-red-50 rounded-lg px-3 py-2"></p>
+            <p id="brd-kin" class="hidden text-sm font-semibold text-red-800 bg-red-100 border border-red-300 rounded-lg px-3 py-2" role="alert"></p>
+            <label id="brd-already-row" class="flex items-start gap-2 text-sm"><input id="brd-already" type="checkbox" class="h-4 w-4 mt-0.5" />
+              <span>She is <b>already in calf</b> from this service (e.g. bought in calf, or served before records began)</span></label>
+            <div id="brd-already-wrap" class="hidden space-y-1">
+              <label for="brd-duedate" class="hf-label">Expected calving date (if you know it instead of the service date)</label>
+              <input id="brd-duedate" type="date" class="hf-input" />
+              <p class="text-xs text-slate-500">The service date above is set to 283 days before it. An estimated service date is fine.</p>
+            </div>
             <div id="brd-cost-wrap" class="grid grid-cols-2 gap-3">
               <div><label for="brd-cost" class="hf-label">Cost (KES, optional)</label><input id="brd-cost" type="number" min="0" step="1" inputmode="decimal" class="hf-input" /></div>
               <div><label for="brd-costmethod" class="hf-label">Paid by</label><select id="brd-costmethod" class="hf-input"><option>Cash</option><option>M-Pesa</option><option>Bank</option><option>Other</option></select></div>

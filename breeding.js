@@ -25,6 +25,23 @@
  * (app.js → Corrections.gs, audit in Record_Changes). Afterwards the cow's
  * herd record is brought in line with her events (reconcileHerd).
  *
+ * v5.9.1 (28 Nov 2026):
+ *   • "She is already in calf from this service" (e.g. bought in calf): the
+ *     service (date, or worked out from the expected calving date) is saved
+ *     with a Pregnant check, so calving and dry-off dates follow at once.
+ *   • Relative check before every service: the bull is compared with the
+ *     cow's father, grandfathers and great-grandfathers (from the herd list's
+ *     sires and from the services her dam and granddams came from, matching
+ *     semen codes too), and with her own descendants and half-siblings.
+ *     Each card lists "Do not serve with: …".
+ *   • Calving passes the sire to the calf: the service's bull, a typed semen
+ *     code that matches an AI bull in the herd list, or the "In calf to" bull
+ *     in her herd record; an old calving linked to an existing calf fills in
+ *     that calf's sire when it is blank.
+ * NOTE: from v5.9.1 this generated file was edited directly (the src
+ * templates were not available); the shared model block is unchanged, so
+ * Breeding.gs needs no change.
+ *
  * Loaded by index.html after herd.js and expenses.js, before app.js;
  * defines window.MaweBreeding.
  * ===================================================================== */
@@ -253,6 +270,94 @@
     const sireLabel = (s) => (s && /^(MT|X)-/.test(s) ? `${nameOf(s)}${animals.find((x) => x.animalId === s && x.aiCode) ? ' · ' + animals.find((x) => x.animalId === s).aiCode : ''}` : s);
     function model() { return brdModel(allEvents(), farmFemales(), todayLocal()); }
 
+    /* ================= pedigree (v5.9.1) ================= */
+
+    const byAnimal = (id) => animals.find((a) => a.animalId === id);
+    /** Semen codes compared without spaces, dashes or case: "7HO 12345" = "7ho-12345". */
+    const normCode = (c) => String(c || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    /** A registered AI bull whose AI code matches a typed code, or null. */
+    const bullByCode = (code) => { const n = normCode(code); return n ? animals.find((a) => a.category === 'AI bull' && normCode(a.aiCode) === n) || null : null; };
+
+    /** The service an animal came from: the last service of her dam 240–300 days before her birth. */
+    function birthService(id, evs) {
+      const a = byAnimal(id);
+      const calving = evs.find((e) => e.eventType === 'Calving' && e.calfId === id);
+      const damId = calving ? calving.animalId : a && a.damId;
+      const born = calving ? calving.date : a && a.dateOfBirth;
+      if (!damId || !born) return null;
+      return evs.filter((e) => e.animalId === damId && e.eventType === 'Service' && brdDiff(born, e.date) >= 240 && brdDiff(born, e.date) <= 300)
+        .sort((x, y) => (x.date < y.date ? 1 : -1))[0] || null;
+    }
+    /** The dam of an animal: herd list, else the calving that produced her. */
+    function damOf(id, evs) {
+      const a = byAnimal(id);
+      if (a && a.damId) return a.damId;
+      const c = evs.find((e) => e.eventType === 'Calving' && e.calfId === id);
+      return c ? c.animalId : '';
+    }
+    /** The sire of an animal as { id, code, name }: the herd list's sire, else the service she came from. */
+    function sireOf(id, evs) {
+      const a = byAnimal(id);
+      const ref = (sid, code) => {
+        const b = sid ? byAnimal(sid) : bullByCode(code);
+        const bid = sid || (b ? b.animalId : '');
+        return { id: bid, code: normCode(b ? b.aiCode : code) || normCode(code), name: b ? `${b.name}${b.aiCode ? ' · ' + b.aiCode : ''}` : (sid || code) };
+      };
+      if (a && a.sireId) return ref(a.sireId, '');
+      const sv = birthService(id, evs);
+      if (sv && (sv.sireId || sv.sireCode)) return ref(sv.sireId || '', sv.sireCode || '');
+      return null;
+    }
+    const REL = ['', 'father', 'grandfather', 'great-grandfather'];
+    /** Bulls not to use on this female: her sires up to 3 generations back, each with the relationship. */
+    function avoidList(femaleId) {
+      const evs = allEvents();
+      const out = [];
+      const seen = new Set();
+      const walk = (id, gen, via) => {
+        if (!id || gen > 3) return;
+        const s = sireOf(id, evs);
+        if (s && (s.id || s.code)) {
+          const k = s.id || s.code;
+          if (!seen.has(k)) { seen.add(k); out.push({ ...s, gen, rel: REL[gen] + (gen > 1 && via ? ` (${via} side)` : '') }); }
+          if (s.id) walk(s.id, gen + 1, gen === 1 ? "sire's" : via);
+        }
+        walk(damOf(id, evs), gen + 1, gen === 1 ? "dam's" : via);
+      };
+      walk(femaleId, 1, '');
+      return out;
+    }
+    /** All ancestor IDs (herd list + calving records) up to `depth` generations. */
+    function ancestorIds(id, evs, depth = 3, out = new Set()) {
+      if (!id || depth === 0) return out;
+      const s = sireOf(id, evs);
+      [damOf(id, evs), s && s.id].forEach((p) => { if (p && !out.has(p)) { out.add(p); ancestorIds(p, evs, depth - 1, out); } });
+      return out;
+    }
+    /**
+     * Warning text when serving femaleId with bull sireId (herd list) or a typed semen code would mate
+     * close relatives, else ''.
+     */
+    function kinWarning(femaleId, sireId, code) {
+      if (!femaleId || (!sireId && !code)) return '';
+      const evs = allEvents();
+      const her = byAnimal(femaleId);
+      const herName = her ? her.name : femaleId;
+      const bull = sireId ? byAnimal(sireId) : bullByCode(code);
+      const bId = sireId || (bull ? bull.animalId : '');
+      const bCode = normCode(bull ? bull.aiCode : code) || normCode(code);
+      const bName = bull ? `${bull.name}${bull.aiCode ? ' (' + bull.aiCode + ')' : ''}` : code;
+      const hit = avoidList(femaleId).find((x) => (bId && x.id === bId) || (bCode && x.code && x.code === bCode));
+      if (hit) return `${bName} is ${herName}'s ${hit.rel}.`;
+      if (bId) {
+        if (ancestorIds(bId, evs).has(femaleId)) return `${bName} is ${herName}'s son or grandson.`;
+        const mine = ancestorIds(femaleId, evs);
+        const shared = [...ancestorIds(bId, evs)].filter((x) => mine.has(x));
+        if (shared.length) return `${bName} and ${herName} are related: both descend from ${shared.map(nameOf).join(', ')}.`;
+      }
+      return '';
+    }
+
     async function refresh(loud) {
       if (!navigator.onLine || !getSession()) { if (loud) toast('Updates when online and signed in', 'info'); return false; }
       try {
@@ -335,7 +440,9 @@
         if (c.pregnancyCheck) lines.push(`Check ${fmt(c.pregnancyCheck.date)}: ${esc(c.pregnancyCheck.result)}`);
         if (c.expectedCalving) lines.push(`${c.expectedIsConfirmed ? 'Due to calve' : 'Would calve (if held)'} <b>${fmt(c.expectedCalving)}</b>${c.expectedIsConfirmed && c.dryOffDue && !c.dryOffDone ? ` · dry off by ${fmt(c.dryOffDue)}` : ''}`);
         if (c.nextAction && !c.expectedCalving) lines.push(`Next: ${esc(c.nextAction)} ${fmt(c.nextDate)}`);
-        if (c.status === 'In calf (date unknown)') lines.push('In calf in the herd list, but no service date recorded. Record the service (even an estimated date) to get calving and dry-off dates.');
+        if (c.status === 'In calf (date unknown)') lines.push('In calf in the herd list, but no service recorded. Use <b>Record the service she is in calf from</b> below (an estimated date, or the expected calving date, is fine).');
+        const avoid = avoidList(c.animalId);
+        if (avoid.length) lines.push(`<span class="text-red-800">Do not serve with: ${avoid.map((x) => `<b>${esc(x.name)}</b> (${esc(x.rel)})`).join(' · ')}</span>`);
         return `<li class="bg-white rounded-xl shadow-sm" data-cow="${esc(c.animalId)}">
           <button type="button" class="brd-cow w-full text-left px-4 py-3 space-y-1">
             <span class="flex items-center justify-between gap-2"><span class="font-semibold text-sm">${esc(c.name)} <span class="text-xs text-slate-400">${esc(c.animalId)} · ${esc(c.category)}</span></span>
@@ -343,6 +450,7 @@
             ${lines.map((l) => `<span class="block text-xs text-slate-600">${l}</span>`).join('')}
             ${c.flags.length ? `<span class="block text-xs text-red-700">${c.flags.map(esc).join(' · ')}</span>` : ''}
           </button>
+          ${c.status === 'In calf (date unknown)' ? `<div class="px-4 pb-3"><button type="button" class="brd-already-btn rounded-lg bg-calf-100 text-calf-700 text-xs font-semibold px-3 py-1.5" data-cow="${esc(c.animalId)}">Record the service she is in calf from</button></div>` : ''}
           <div class="brd-hist hidden px-4 pb-3 text-xs text-slate-600"></div>
         </li>`;
       }).join('') : '<li class="text-sm text-slate-400 px-1">No cows or heifers in the herd register yet.</li>';
@@ -391,7 +499,8 @@
       $('#brd-type').disabled = !!ev;
       $('#brd-cow').disabled = !!ev;
       $('#brd-date').value = preset.date || todayLocal();
-      ['#brd-sirecode', '#brd-tech', '#brd-cost', '#brd-calfweight', '#brd-calfname', '#brd-notes', '#brd-reason'].forEach((s) => { $(s).value = ''; });
+      ['#brd-sirecode', '#brd-tech', '#brd-cost', '#brd-calfweight', '#brd-calfname', '#brd-notes', '#brd-reason', '#brd-duedate'].forEach((s) => { $(s).value = ''; });
+      $('#brd-already').checked = !!preset.already;
       $('#brd-sire').value = '';
       delete $('#brd-calfname').dataset.touched;
       if (ev) {
@@ -421,7 +530,10 @@
       const ai = $('#brd-method').value === 'AI';
       show($('#brd-service'), t === 'Service');
       show($('#brd-semen-wrap'), t === 'Service' && ai);
-      show($('#brd-cost-wrap'), t === 'Service' && !pendingExpenseId && !editing);
+      const already = t === 'Service' && !editing && $('#brd-already').checked;
+      show($('#brd-already-row'), t === 'Service' && !editing && !pendingExpenseId);
+      show($('#brd-already-wrap'), already);
+      show($('#brd-cost-wrap'), t === 'Service' && !pendingExpenseId && !editing && !already);
       show($('#brd-reason-wrap'), !!editing);
       show($('#brd-calf-wrap'), t === 'Calving' && $('#brd-outcome').value === 'Alive' && !editing);
       $('#brd-outcome').disabled = !!editing; $('#brd-calfsex').disabled = !!editing;
@@ -449,10 +561,32 @@
         'Calving': $('#brd-outcome').value !== 'Alive' ? 'She becomes Lactating and Open.' : $('#brd-calfexisting').value ? 'She becomes Lactating and Open; the calving is linked to the calf already in the herd list.'
           : 'She becomes Lactating and Open, and the calf is added to the herd with a new MT- number.',
         'Abortion / loss': 'She will be marked Open.',
-        'Service': 'She stays Open until a pregnancy check confirms it. You will be reminded when to watch for a repeat heat and when to check.',
+        'Service': already ? 'Saved with a Pregnant check: she is marked In-calf, and her calving and dry-off dates are worked out from this service date.'
+          : 'She stays Open until a pregnancy check confirms it. You will be reminded when to watch for a repeat heat and when to check.',
         'Heat': 'Her next heat is expected 21 days later.',
       }[t] || '';
       $('#brd-effect').textContent = what;
+      updateKin();
+    }
+
+    /** Live relative check in the service form, and the cow's "do not serve with" list. */
+    function updateKin() {
+      const t = $('#brd-type').value;
+      const cow = $('#brd-cow').value;
+      const box = $('#brd-kin');
+      const avoidEl = $('#brd-avoid');
+      if (t !== 'Service' || !cow) { show(box, false); show(avoidEl, false); return; }
+      const sireId = $('#brd-sire').value;
+      const code = sireId ? '' : $('#brd-sirecode').value.trim();
+      const w = kinWarning(cow, sireId, code);
+      box.textContent = w ? `⚠ ${w} Serving close relatives (inbreeding) lowers fertility, calf survival, growth and milk. Choose another bull.` : '';
+      show(box, !!w);
+      const avoid = avoidList(cow);
+      avoidEl.innerHTML = avoid.length ? `Do not use for ${esc(nameOf(cow))}: ${avoid.map((x) => `<b>${esc(x.name)}</b> (${esc(x.rel)})`).join(' · ')}` : '';
+      show(avoidEl, avoid.length > 0);
+      const m = code ? bullByCode(code) : null;
+      $('#brd-codehint').textContent = code && !m ? 'Tip: add this bull in Herd → Animals → Outside (category AI bull, with this code) so his calves are linked to him.'
+        : m ? `Matches ${m.name} (${m.animalId}) in the herd list.` : '';
     }
 
     /** Correct an event: on the phone if not uploaded, else a queued correction. */
@@ -562,19 +696,30 @@
       const rec = { ...baseRecord(), eventId: nextEventId(date), date, animalId: cowId, eventType: t, method: '', sireId: '', sireCode: '', semenType: '', technician: '', result: '',
         calvingEase: '', calfSex: '', calfWeightKg: '', calfOutcome: '', calfId: '', expenseId: '', notes: $('#brd-notes').value.trim().slice(0, 300) };
       let cost = 0;
+      let already = false; // v5.9.1: service she is already in calf from
       if (t === 'Service') {
         rec.method = $('#brd-method').value;
         rec.sireId = $('#brd-sire').value;
         rec.sireCode = rec.sireId ? '' : $('#brd-sirecode').value.trim().slice(0, 60);
+        // A typed code that belongs to an AI bull in the herd list is saved as that bull, so his calves are linked to him.
+        const known = !rec.sireId && rec.sireCode ? bullByCode(rec.sireCode) : null;
+        if (known) { rec.sireId = known.animalId; rec.sireCode = ''; }
         if (!rec.sireId && !rec.sireCode && !confirm('No bull or semen code entered. Save anyway?')) return;
         rec.semenType = rec.method === 'AI' ? $('#brd-semen').value : '';
         rec.technician = $('#brd-tech').value.trim().slice(0, 60);
         rec.expenseId = pendingExpenseId;
-        cost = pendingExpenseId ? 0 : (num($('#brd-cost').value) || 0);
+        already = $('#brd-already').checked && !pendingExpenseId;
+        cost = pendingExpenseId || already ? 0 : (num($('#brd-cost').value) || 0);
         if (cost < 0 || cost > 200000) { setError('Cost should be between 0 and 200,000.'); return; }
+        const kin = kinWarning(cowId, rec.sireId, rec.sireCode);
+        if (kin && !confirm(`${kin}\n\nServing close relatives (inbreeding) lowers fertility, calf survival, growth and milk.\n\n${already ? 'Save the record anyway?' : 'Serve her with this bull anyway?'}`)) return;
         const m = model().cows.find((c) => c.animalId === cowId);
-        // In calf either from a recorded check, or in the herd register (status set before breeding records began).
-        if (((m && m.expectedIsConfirmed) || cow.pregnancyStatus === 'In-calf') && !confirm(`${cow.name} is recorded as in calf. Serve her anyway?`)) return;
+        if (already) {
+          if (m && m.expectedIsConfirmed) { setError(`${cow.name} already has a confirmed pregnancy recorded. Edit that service in her history instead.`); return; }
+          if (brdDiff(todayLocal(), date) > 300) { setError('That service date is more than 300 days ago: she would already have calved. Check the date.'); return; }
+          if (!rec.notes) rec.notes = 'In calf when recorded (e.g. bought in calf)';
+        } else if (brdDiff(todayLocal(), date) <= 300 && ((m && m.expectedIsConfirmed) || cow.pregnancyStatus === 'In-calf') && !confirm(`${cow.name} is recorded as in calf. Serve her anyway?`)) return;
+        // (A service more than 300 days ago is an old record, e.g. the one an existing calf came from: no question.)
       } else if (t === 'Pregnancy check') {
         rec.result = $('#brd-result').value;
         rec.technician = $('#brd-tech').value.trim().slice(0, 60);
@@ -598,11 +743,13 @@
         const before = model().cows.find((c) => c.animalId === cowId);
         // 1. A live calf joins the herd (gets its MT- number first, so the event can name it).
         if (t === 'Calving' && rec.calfOutcome === 'Alive' && !rec.calfId) {
-          const sire = before && before.conceptionSireId ? before.conceptionSireId : (before && before.lastService && before.lastService.sireId) || '';
+          const cs = calfSire(cowId, date);
+          const sire = cs.id;
           try {
             const calf = await herd.addAnimal({ name: ($('#brd-calfname').value.trim() || `${cow.name} calf ${date.slice(5, 7)}/${date.slice(2, 4)}`).slice(0, 40),
               sex: rec.calfSex, category: 'Calf', breed: herd.suggestBreed ? (herd.suggestBreed(cowId, sire) || 'Unknown') : 'Unknown',
-              dateOfBirth: date, damId: cowId, sireId: sire, milkingStatus: 'N/A', pregnancyStatus: 'N/A' });
+              dateOfBirth: date, damId: cowId, sireId: sire, milkingStatus: 'N/A', pregnancyStatus: 'N/A',
+              ...(cs.code && !sire ? { notes: `Sire: ${cs.code} (semen code; bull not in the herd list)` } : {}) });
             rec.calfId = calf.animalId;
             notes.push(`calf ${calf.name} added as ${calf.animalId}`);
           } catch (err) { notes.push('calf not added to the herd: ' + (err.message || err)); }
@@ -620,12 +767,30 @@
           rec.expenseId = exp.expenseId;
           notes.push(`cost ${money(cost)} recorded in Expenses`);
         }
+        // 1b. An old calving linked to a calf already in the herd list: fill in the calf's sire if blank.
+        if (t === 'Calving' && rec.calfId && $('#brd-calfexisting').value) {
+          const k = animals.find((a) => a.animalId === rec.calfId);
+          const cs = calfSire(cowId, date);
+          if (k && !k.sireId && cs.id) {
+            try { await herd.updateAnimal(k.animalId, { sireId: cs.id }); notes.push(`${k.name}'s sire set to ${nameOf(cs.id)}`); } catch (err) { notes.push('calf\'s sire not set: ' + (err.message || err)); }
+          }
+        }
         // 3. The event.
         await db[STORE].add(rec);
+        // 3b. Already in calf from this service: a Pregnant check (dated up to 60 days after the service, not later than today).
+        if (already) {
+          const pdDate = brdDiff(todayLocal(), date) > 60 ? brdAdd(date, 60) : todayLocal();
+          let pdId = nextEventId(pdDate);
+          if (pdId === rec.eventId) pdId = pdId.replace(/(\d+)$/, (n) => String(Number(n) + 1).padStart(n.length, '0'));
+          await db[STORE].add({ ...baseRecord(), eventId: pdId, date: pdDate, animalId: cowId, eventType: 'Pregnancy check', method: '', sireId: '', sireCode: '', semenType: '', technician: '',
+            result: 'Pregnant', calvingEase: '', calfSex: '', calfWeightKg: '', calfOutcome: '', calfId: '', expenseId: '', notes: 'Recorded with the service she was already in calf from' });
+          notes.push('pregnancy confirmed');
+        }
         // 4. The cow in the herd register.
         const after = brdModel(allEvents().concat(local.some((x) => x.clientId === rec.clientId) ? [] : [rec]), farmFemales(), todayLocal()).cows.find((c) => c.animalId === cowId);
         let patch = null;
         if (t === 'Pregnancy check' && rec.result === 'Pregnant') patch = { pregnancyStatus: 'In-calf', pregnancySireId: after && /^(MT|X)-/.test(after.conceptionSireId) ? after.conceptionSireId : '' };
+        else if (already) patch = { pregnancyStatus: 'In-calf', pregnancySireId: /^(MT|X)-/.test(rec.sireId) ? rec.sireId : (cow.pregnancySireId || '') };
         else if ((t === 'Pregnancy check' && rec.result === 'Not pregnant') || t === 'Abortion / loss') patch = { pregnancyStatus: 'Open', pregnancySireId: '' };
         else if (t === 'Dry-off') patch = { milkingStatus: 'Dry' };
         else if (t === 'Calving') {
@@ -647,6 +812,23 @@
       }
     }
 
+    /**
+     * The calf's sire at calving: the bull of the service she conceived it from (the last service 240–300 days
+     * before this calving, else her last service within 300 days), a typed semen code matched to an AI bull in
+     * the herd list, else — for a recent calving only — the "In calf to" bull in her herd record (bought in calf).
+     * Returns { id: 'MT-…|X-…' | '', code: typed code when no bull matched }.
+     */
+    function calfSire(cowId, date) {
+      const svcs = allEvents().filter((e) => e.animalId === cowId && e.eventType === 'Service' && e.date < date && brdDiff(date, e.date) <= 300)
+        .sort((x, y) => (x.date < y.date ? 1 : -1));
+      const svc = svcs.find((e) => brdDiff(date, e.date) >= 240) || svcs[0];
+      let id = (svc && svc.sireId) || '';
+      let code = '';
+      if (!id && svc && svc.sireCode) { const b = bullByCode(svc.sireCode); if (b) id = b.animalId; else code = svc.sireCode; }
+      if (!id && !code && brdDiff(todayLocal(), date) <= 30) { const cow = byAnimal(cowId); if (cow && cow.pregnancySireId) id = cow.pregnancySireId; }
+      return { id: /^(MT|X)-/.test(id) ? id : '', code };
+    }
+
     function baseRecord() {
       const now = new Date().toISOString();
       const s = getSession();
@@ -666,11 +848,16 @@
       $('#brd-refresh').addEventListener('click', () => refresh(true));
       $('#brd-cancel').addEventListener('click', closeForm);
       $('#brd-form').addEventListener('submit', handleSubmit);
-      ['#brd-type', '#brd-method', '#brd-sire', '#brd-result', '#brd-outcome', '#brd-cow', '#brd-calfexisting'].forEach((s) => $(s).addEventListener('change', updateForm));
+      ['#brd-type', '#brd-method', '#brd-sire', '#brd-result', '#brd-outcome', '#brd-cow', '#brd-calfexisting', '#brd-already'].forEach((s) => $(s).addEventListener('change', updateForm));
+      $('#brd-sirecode').addEventListener('input', updateKin);
+      // Expected calving date → service date (283 days before).
+      $('#brd-duedate').addEventListener('change', () => { const d = $('#brd-duedate').value; if (/^\d{4}-\d{2}-\d{2}$/.test(d)) { $('#brd-date').value = brdAdd(d, -BRD_RULES.gestation); updateForm(); } });
       $('#brd-calfname').addEventListener('input', () => { $('#brd-calfname').dataset.touched = '1'; });
       $('#breed-view').addEventListener('click', (e) => {
         const d = e.target.closest('.brd-do');
         if (d) { openForm(d.dataset.type, d.dataset.cow); return; }
+        const al = e.target.closest('.brd-already-btn');
+        if (al) { openForm('Service', al.dataset.cow, { already: true }); return; }
         const ed = e.target.closest('.brd-edit');
         if (ed) { const ev = allEvents().find((x) => x.clientId === ed.dataset.id); if (ev) { openForm(ev.eventType, ev.animalId, { date: ev.date }, ev); } return; }
         const cx = e.target.closest('.brd-cancel-ev');
